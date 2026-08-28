@@ -45,7 +45,7 @@
               -noanalysis \
               -scriptPath ${./ghidra/scripts} \
               -postScript DumpAll.java \
-              $out/$1.txt
+              $out/$1.c
           }
 
           decompile bmu
