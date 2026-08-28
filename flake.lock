@@ -1,0 +1,43 @@
+{
+  "nodes": {
+    "imiev-hacking-tools": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787642651,
+        "narHash": "sha256-ZYTGgfhN1axD7Yd0x+rT+Yq1Iv2piPyEOKcaYUGIIZg=",
+        "owner": "bonybrown",
+        "repo": "imiev-hacking-tools",
+        "rev": "adef0cc4dc9c3f0d7d2cafc79b28d3ded92b228d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "bonybrown",
+        "repo": "imiev-hacking-tools",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1787881991,
+        "narHash": "sha256-XbHCy2BrRmia1T4EGjiXlEnfNT4X1LHQGiLLuZN3rn4=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "bf581a82b438caf51ca613c20e2b97c015d64332",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "imiev-hacking-tools": "imiev-hacking-tools",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
