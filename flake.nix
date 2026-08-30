@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
+    nixpkgs.url = "github:puffnfresh/nixpkgs/m32r";
     imiev-hacking-tools = {
       url = "github:bonybrown/imiev-hacking-tools";
       flake = false;
@@ -12,44 +12,20 @@
       let pkgs = nixpkgs.legacyPackages."${system}"; in rec {
         default = imiev-hacking-tools.outPath;
 
-        ghidra-m32r = pkgs.ghidra.overrideAttrs (drv: {
-          pname = "ghidra-m32r";
-          postInstall = (drv.postInstall or "") + ''
-            proc="$out/lib/ghidra/Ghidra/Processors/m32r"
-            mkdir -p "$proc"
-            cp -r ${imiev-hacking-tools}/Ghidra/Processors/m32r/data "$proc/"
-            : > "$proc/Module.manifest"
-            chmod -R u+w "$proc"
-          '';
-        });
+        ghidra-m32r = pkgs.callPackage ./nix/ghidra-m32r.nix {
+          inherit imiev-hacking-tools;
+        };
+        decompilation = pkgs.callPackage ./nix/decompilation.nix {
+          inherit ghidra-m32r;
+        };
+        test-suite-rom = pkgs.callPackage ./nix/test-suite-rom.nix { };
 
-        decompilation = pkgs.runCommand "imiev-decompilation" { buildInputs = [ ghidra-m32r ]; } ''
-          cp ${./firmware}/* .
-          mkdir tmp-project
+        copy-artifacts = pkgs.writeShellScriptBin "copy-artifacts.sh" ''
+          install -m 0644 ${decompilation}/* decompilation/
 
-          mkdir -p $out
-          decompile() {
-            ghidra-analyzeHeadless \
-              tmp-project \
-              $1 \
-              -import $1.bin \
-              -processor m32r:2:default \
-              -scriptPath ${./ghidra/scripts} \
-              -postScript ApplySymbols.java \
-              ${./ghidra/symbols}/$1.txt
-
-            ghidra-analyzeHeadless \
-              tmp-project \
-              $1 \
-              -process $1.bin \
-              -noanalysis \
-              -scriptPath ${./ghidra/scripts} \
-              -postScript DumpAll.java \
-              $out/$1.c
-          }
-
-          decompile bmu
-          decompile ev-ecu
+          TESTDATA=m32r-emulator/src/testdata/
+          mkdir -p "$TESTDATA"
+          install -m 0644 ${test-suite-rom}/* "$TESTDATA"
         '';
       }
     );
