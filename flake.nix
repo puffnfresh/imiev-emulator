@@ -27,6 +27,8 @@
           mkdir -p "$TESTDATA"
           install -m 0644 ${test-suite-rom}/* "$TESTDATA"
         '';
+
+        m32r-emulator = pkgs.callPackage ./nix/m32r-emulator.nix { };
       }
     );
   };
