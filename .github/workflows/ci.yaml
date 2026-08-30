@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Copy artifacts leaves no Git changes
+        run: |
+          nix run .#copy-artifacts
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::copy-artifacts produced changes; commit the regenerated artifacts."
+            git status --porcelain
+            git diff
+            exit 1
+          fi
+
+      - name: Build m32r-emulator
+        run: nix build .#m32r-emulator --print-build-logs
