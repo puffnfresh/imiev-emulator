@@ -1,7 +1,5 @@
-//! Faithful M32R-FP interpreter, ported instruction-for-instruction from the
-//! Ghidra SLEIGH spec at Ghidra/Processors/m32r/data/languages/m32r.sinc.
-//! Big-endian. Registers R0..R15 (R13=FP, R15=SP). Sequential execution
-//! (parallel-execution bit ignored, matching Ghidra's p-code emulator).
+//! M32R-FP interpreter, ported from the Ghidra SLEIGH spec:
+//! https://github.com/bonybrown/imiev-hacking-tools
 
 /// Memory bus the CPU talks to. Implementors add the MMIO peripheral stubs.
 pub trait Bus {
@@ -72,8 +70,6 @@ fn sborrow_sub(a: u32, b: u32) -> bool {
 fn field(lo: u32, n: u32, x: u32) -> u32 {
     (x >> lo) & ((1u32 << n) - 1)
 }
-// Common instruction-decode fields. `as` truncation makes the low-byte/low-nib
-// masks implicit, so callers don't repeat `& 0xff` / `& 0xf`.
 #[inline]
 fn hi_byte(x: u16) -> u8 {
     (x >> 8) as u8
@@ -141,7 +137,6 @@ impl Cpu {
         }
     }
 
-    /// Length in bytes of the instruction whose first byte is `b0`.
     pub fn insn_len(b0: u8) -> u32 {
         let op1 = b0 >> 4;
         match op1 {
@@ -158,15 +153,13 @@ impl Cpu {
         }
     }
 
-    /// True when the CPU will accept a maskable interrupt (PSW.IE, bit 6).
     pub fn interrupts_enabled(&self) -> bool {
         (self.psw & 0x40) != 0
     }
 
     /// Take an EIT (interrupt) to `vector`, the M32R way: save PC->BPC, back up the
     /// current SM/IE/C into BSM/BIE/BC, then clear IE (mask further interrupts).
-    /// The matching `RTE` restores them. This is the ONLY way an interrupt is
-    /// delivered — driven by the ICU from a free-running machine, never by hand.
+    /// The matching `RTE` restores them.
     pub fn take_interrupt(&mut self, vector: u32) {
         self.bpc = self.pc;
         let ie = (self.psw >> 6) & 1;
@@ -224,8 +217,7 @@ impl Cpu {
             0x5 => {
                 // op1=0x5 is shared between shift-immediate and the accumulator move
                 // ops (mvfac*/mvtac*). The moves use byte1 values (0x70/0x71/0xf0/
-                // 0xf1/0xf2) whose top 3 bits (the shift sub-op) are 3 or 7 — never a
-                // valid shift (sub 0..2) — so byte1 disambiguates cleanly.
+                // 0xf1/0xf2) whose top 3 bits (the shift sub-op) are 3 or 7.
                 match b1 {
                     0x70 => {
                         // MVTACHI Rsrc: ACC[32:63] = Rsrc, low half preserved
