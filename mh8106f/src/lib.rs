@@ -15,7 +15,7 @@
 use m32r_emulator::{Bus, Cpu};
 
 pub mod periph;
-pub use periph::{Adc, Icu, Timer};
+pub use periph::{Adc, Can1, Icu, Timer};
 use periph::Peripheral;
 
 pub const FLASH_BASE: u32 = 0x0000_0000;
@@ -33,6 +33,7 @@ pub(crate) struct Machine {
     pub timer: Timer,
     pub icu: Icu,
     pub adc: Adc,
+    pub can1: Can1,
     pub last_unclaimed_sfr_read: u32,
 }
 
@@ -48,6 +49,7 @@ impl Machine {
             timer: Timer::new(),
             icu: Icu::new(),
             adc: Adc::new(),
+            can1: Can1::new(),
             last_unclaimed_sfr_read: 0,
         }
     }
@@ -85,6 +87,9 @@ impl Machine {
         if self.adc.handles(a) {
             return self.adc.read(a, size);
         }
+        if self.can1.handles(a) {
+            return self.can1.read(a, size);
+        }
         if (RAM_BASE..SFR_END).contains(&a) {
             self.last_unclaimed_sfr_read = a;
         }
@@ -107,6 +112,9 @@ impl Machine {
         if self.adc.handles(a) {
             return self.adc.write(a, size, v);
         }
+        if self.can1.handles(a) {
+            return self.can1.write(a, size, v);
+        }
         if let Some(off) = self.ram_off(a) {
             be_write(&mut self.ram, off, size, v)
         }
@@ -115,7 +123,7 @@ impl Machine {
 }
 
 #[inline]
-fn be_read(buf: &[u8], off: usize, size: u32) -> u32 {
+pub(crate) fn be_read(buf: &[u8], off: usize, size: u32) -> u32 {
     let mut v = 0u32;
     for i in 0..size as usize {
         v = (v << 8) | *buf.get(off + i).unwrap_or(&0) as u32;
@@ -124,7 +132,7 @@ fn be_read(buf: &[u8], off: usize, size: u32) -> u32 {
 }
 
 #[inline]
-fn be_write(buf: &mut [u8], off: usize, size: u32, v: u32) {
+pub(crate) fn be_write(buf: &mut [u8], off: usize, size: u32, v: u32) {
     for i in 0..size as usize {
         let shift = 8 * (size as usize - 1 - i);
         if let Some(b) = buf.get_mut(off + i) {
@@ -191,6 +199,11 @@ impl System {
 
     pub fn adc_mut(&mut self) -> &mut Adc {
         &mut self.mem.adc
+    }
+
+    pub fn inject_can1(&mut self, slot: u32, sid: u16, data: &[u8]) {
+        let iv = self.mem.can1.deliver_rx(slot, sid, data);
+        self.mem.icu.raise(iv);
     }
 
     /// Advance one CPU step, delivering a pending interrupt first if the core can
@@ -342,6 +355,58 @@ mod tests {
             (0x808000..=RAM_END).contains(&sys.cpu.r[15]),
             "ECU SP not initialized into RAM: {:#010x}",
             sys.cpu.r[15]
+        );
+    }
+
+    #[test]
+    fn bmu_battery_model_unblocks_with_cmu_frames() {
+        const BOARD_ARRAY: u32 = 0x0080_7f30; // can1_store_cell destination
+        const CMU_RX_SLOT: u32 = 30;
+
+        let fw = include_bytes!("../../firmware/bmu.bin");
+        let mut sys = System::new(fw);
+
+        // A CMU response frame:
+        // data[2]=tempC+50
+        // data[4:5]
+        // data[6:7]=two cells each (V-2.1)*200
+        //
+        // 3.7V -> 320
+        // 25C -> 75
+        let [vh, vl] = 320u16.to_be_bytes();
+        let frame = [0u8, 0, 75, 0, vh, vl, vh, vl];
+        let mut sids = Vec::new();
+        for board in 1..=12u16 {
+            for cell in [1u16, 3, 5, 7] {
+                sids.push(0x600 | (board << 4) | cell);
+            }
+        }
+
+        let mut si = 0usize;
+        let mut board_array_written = false;
+        const MAX_STEPS: u64 = 12_000_000;
+        for i in 0..MAX_STEPS {
+            if sys.cpu.in_eit == 0 && sys.mem.icu.pending().is_none() {
+                sys.inject_can1(CMU_RX_SLOT, sids[si % sids.len()], &frame);
+                si += 1;
+            }
+            if !sys.step() {
+                panic!("decode failure at pc={:#010x} (step {i})", sys.cpu.pc);
+            }
+            board_array_written |= sys.peek(BOARD_ARRAY, 4) != 0;
+            if board_array_written && sys.interrupts_taken >= 100 {
+                break;
+            }
+        }
+
+        assert!(
+            board_array_written,
+            "CAN1 RX path not delivering"
+        );
+        assert!(
+            sys.interrupts_taken >= 100,
+            "battery model may still be hanging (interrupts_taken={})",
+            sys.interrupts_taken
         );
     }
 }
