@@ -63,6 +63,18 @@ fn sborrow_sub(a: u32, b: u32) -> bool {
     (a as i32).checked_sub(b as i32).is_none()
 }
 
+// PSW (Processor Status Word) bit positions. On EIT the live SM/IE/C are copied
+// into their backup slots (BSM/BIE/BC) and restored by RTE.
+const PSW_C: u32 = 0; // condition / carry-borrow flag
+const PSW_IE: u32 = 6; // interrupt enable
+const PSW_SM: u32 = 7; // stack mode: 0 = SPI (interrupt), 1 = SPU (user)
+const PSW_BC: u32 = 8; // backup of C
+const PSW_BIE: u32 = 14; // backup of IE
+const PSW_BSM: u32 = 15; // backup of SM
+
+/// PC word-alignment mask: M32R branch/jump targets clear the low two bits.
+const PC_ALIGN: u32 = !0b11;
+
 // Bit-field extraction --------------------------------------------------------
 
 /// Extract `n` bits at offset `lo`.
@@ -111,12 +123,17 @@ impl Cpu {
         }
     }
 
+    #[inline]
+    fn sm(&self) -> u32 {
+        (self.psw >> PSW_SM) & 1
+    }
+
     fn read_cr(&self, i: u32) -> u32 {
         match i & 7 {
-            0 => (self.psw & !1) | (self.c as u32),
+            0 => (self.psw & !(1 << PSW_C)) | (self.c as u32),
             1 => self.cbr,
-            2 => self.spi,
-            3 => self.spu,
+            2 => if self.sm() == 0 { self.r[15] } else { self.spi }, // SPI
+            3 => if self.sm() == 1 { self.r[15] } else { self.spu }, // SPU
             6 => self.bpc,
             7 => self.fpsr,
             _ => 0,
@@ -126,15 +143,41 @@ impl Cpu {
         match i & 7 {
             0 => {
                 self.psw = v;
-                self.c = (v & 1) != 0;
+                self.c = (v & (1 << PSW_C)) != 0;
             }
             1 => self.cbr = v,
-            2 => self.spi = v,
-            3 => self.spu = v,
+            2 => {
+                self.spi = v;
+                if self.sm() == 0 {
+                    self.r[15] = v;
+                }
+            }
+            3 => {
+                self.spu = v;
+                if self.sm() == 1 {
+                    self.r[15] = v;
+                }
+            }
             6 => self.bpc = v,
             7 => self.fpsr = v,
             _ => {}
         }
+    }
+
+    /// Switch PSW.SM, banking R15 between the SPI (interrupt) and SPU (user)
+    /// stack pointers so R15 always holds the active bank.
+    fn set_sm(&mut self, new_sm: u32) {
+        let old = self.sm();
+        if old == new_sm {
+            return;
+        }
+        if old == 0 {
+            self.spi = self.r[15];
+        } else {
+            self.spu = self.r[15];
+        }
+        self.psw = (self.psw & !(1 << PSW_SM)) | ((new_sm & 1) << PSW_SM);
+        self.r[15] = if new_sm == 0 { self.spi } else { self.spu };
     }
 
     pub fn insn_len(b0: u8) -> u32 {
@@ -154,7 +197,7 @@ impl Cpu {
     }
 
     pub fn interrupts_enabled(&self) -> bool {
-        (self.psw & 0x40) != 0
+        (self.psw & (1 << PSW_IE)) != 0
     }
 
     /// Take an EIT (interrupt) to `vector`, the M32R way: save PC->BPC, back up the
@@ -162,11 +205,13 @@ impl Cpu {
     /// The matching `RTE` restores them.
     pub fn take_interrupt(&mut self, vector: u32) {
         self.bpc = self.pc;
-        let ie = (self.psw >> 6) & 1;
-        let sm = (self.psw >> 7) & 1;
+        let ie = (self.psw >> PSW_IE) & 1;
+        let sm = (self.psw >> PSW_SM) & 1;
         let c = self.c as u32;
-        self.psw = (self.psw & !0x0000_C100) | (sm << 15) | (ie << 14) | (c << 8);
-        self.psw &= !0x40; // IE = 0
+        let backup_mask = (1 << PSW_BSM) | (1 << PSW_BIE) | (1 << PSW_BC);
+        self.psw = (self.psw & !backup_mask) | (sm << PSW_BSM) | (ie << PSW_BIE) | (c << PSW_BC);
+        self.psw &= !(1 << PSW_IE); // IE = 0
+        self.set_sm(0); // EIT runs on the interrupt stack (SPI)
         self.pc = vector;
         self.in_eit += 1;
     }
@@ -337,9 +382,9 @@ impl Cpu {
             12 => {
                 // JL (0x1E) / JMP (0x1F, RET=JMP R14)
                 if b0 == 0x1E {
-                    self.r[14] = (pc & 0xFFFF_FFFC).wrapping_add(4);
+                    self.r[14] = (pc & PC_ALIGN).wrapping_add(4);
                 }
-                self.pc = self.r[rs] & 0xFFFF_FFFC;
+                self.pc = self.r[rs] & PC_ALIGN;
             }
             13 => {
                 // RTE = full opcode 0x10D6: return from EIT. Restore PC from BPC and
@@ -348,10 +393,11 @@ impl Cpu {
                 // interrupt and the machine never takes another one.
                 if b0 == 0x10 {
                     self.pc = self.bpc;
-                    let bsm = (self.psw >> 15) & 1;
-                    let bie = (self.psw >> 14) & 1;
-                    let bc = (self.psw >> 8) & 1;
-                    self.psw = (self.psw & !0x00C0) | (bsm << 7) | (bie << 6);
+                    let bsm = (self.psw >> PSW_BSM) & 1;
+                    let bie = (self.psw >> PSW_BIE) & 1;
+                    let bc = (self.psw >> PSW_BC) & 1;
+                    self.psw = (self.psw & !(1 << PSW_IE)) | (bie << PSW_IE); // restore IE
+                    self.set_sm(bsm); // restore SM, banking R15
                     self.c = bc != 0;
                     self.in_eit = self.in_eit.saturating_sub(1);
                 }
@@ -413,7 +459,7 @@ impl Cpu {
 
     // op1=7 : branches REL8 / PSW ops / NOP (16-bit)
     fn op1_7<B: Bus>(&mut self, _bus: &mut B, b0: u8, b1: u8, pc: u32) {
-        let rel8 = (pc & 0xFFFF_FFFC).wrapping_add(sext8(b1) << 2);
+        let rel8 = (pc & PC_ALIGN).wrapping_add(sext8(b1) << 2);
         match b0 {
             0x70 => {}                                       // NOP
             0x71 => self.psw |= b1 as u32,                   // SETPSW
@@ -422,7 +468,7 @@ impl Cpu {
             0x7D => if !self.c { self.pc = rel8 },           // BNC
             0x7E => {
                 // BL
-                self.r[14] = (pc & 0xFFFF_FFFC).wrapping_add(4);
+                self.r[14] = (pc & PC_ALIGN).wrapping_add(4);
                 self.pc = rel8;
             }
             0x7F => self.pc = rel8, // BRA
@@ -520,7 +566,7 @@ impl Cpu {
 
     // op1=B : conditional branches with rel16 (32-bit)
     fn op1_b(&mut self, op3: u32, _b0: u8, rd: usize, rs: usize, hw1: u16, pc: u32) {
-        let target = (pc & 0xFFFF_FFFC).wrapping_add(sext16(hw1) << 2);
+        let target = (pc & PC_ALIGN).wrapping_add(sext16(hw1) << 2);
         let take = match op3 {
             0 => self.r[rd] == self.r[rs],       // BEQ
             1 => self.r[rd] != self.r[rs],       // BNE
@@ -581,13 +627,13 @@ impl Cpu {
             return; // NOP
         }
         let disp = sext24(((b1 as u32) << 16) | (hw1 as u32));
-        let target = (pc & 0xFFFF_FFFC).wrapping_add(disp << 2);
+        let target = (pc & PC_ALIGN).wrapping_add(disp << 2);
         match b0 {
             0xFC => if self.c { self.pc = target },  // BC
             0xFD => if !self.c { self.pc = target }, // BNC
             0xFE => {
                 // BL
-                self.r[14] = (pc & 0xFFFF_FFFC).wrapping_add(4);
+                self.r[14] = (pc & PC_ALIGN).wrapping_add(4);
                 self.pc = target;
             }
             0xFF => self.pc = target, // BRA
@@ -660,4 +706,30 @@ mod rom_tests {
     rom_test!(test_dsp, "test_dsp.bin");
     rom_test!(test_mem, "test_mem.bin");
     rom_test!(test_mul, "test_mul.bin");
+
+    // R15 aliases the stack pointer selected by PSW.SM (0=>SPI, 1=>SPU).
+    #[test]
+    fn r15_aliases_spi_via_mvtc() {
+        let mut cpu = Cpu::new();
+        assert_eq!(cpu.sm(), 0, "reset selects the interrupt stack (SPI)");
+        cpu.r[2] = 0x0081_2000;
+        cpu.write_cr(2, cpu.r[2]); // MVTC R2,SPI
+        assert_eq!(cpu.r[15], 0x0081_2000, "SPI write must reflect into R15");
+        assert_eq!(cpu.read_cr(2), 0x0081_2000, "reading SPI returns live R15");
+    }
+
+    // Switching PSW.SM banks R15 between SPI and SPU without losing either value.
+    #[test]
+    fn sm_switch_banks_r15() {
+        let mut cpu = Cpu::new();
+        cpu.write_cr(2, 0x0081_2000); // SPI (active, SM=0)
+        cpu.write_cr(3, 0x0090_0000); // SPU (inactive)
+        assert_eq!(cpu.r[15], 0x0081_2000);
+        cpu.set_sm(1); // switch to user stack
+        assert_eq!(cpu.r[15], 0x0090_0000, "R15 now the SPU bank");
+        cpu.r[15] = 0x0090_0010; // push on user stack
+        cpu.set_sm(0); // back to interrupt stack
+        assert_eq!(cpu.r[15], 0x0081_2000, "SPI preserved across the switch");
+        assert_eq!(cpu.read_cr(3), 0x0090_0010, "SPU update preserved too");
+    }
 }

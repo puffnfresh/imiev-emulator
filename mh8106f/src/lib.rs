@@ -1,0 +1,347 @@
+//! Model of the Renesas MH8106F
+//! The i-MiEV's M32R-family SoC used in both the BMU and EV-ECU.
+//!
+//! There is no public MH8106F datasheet; the peripheral register semantics
+//! are taken from the closest documented part (M32192).
+//!
+//! # Memory map
+//!
+//! | Region       | Range                      | Access                     |
+//! |--------------|----------------------------|----------------------------|
+//! | Flash (code) | `0x0000_0000..0x0010_0000` | read-only (writes dropped) |
+//! | SFR block    | `0x0080_0000..0x0080_4000` | peripheral registers       |
+//! | Internal RAM | `0x0080_4000..0x0081_4000` | read/write                 |
+
+use m32r_emulator::{Bus, Cpu};
+
+pub mod periph;
+pub use periph::{Adc, Icu, Timer};
+use periph::Peripheral;
+
+pub const FLASH_BASE: u32 = 0x0000_0000;
+pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
+pub const RAM_BASE: u32 = 0x0080_0000;
+pub const RAM_END: u32 = 0x0081_4000; // exclusive
+pub const RAM_LEN: usize = (RAM_END - RAM_BASE) as usize;
+pub const SFR_END: u32 = 0x0080_4000;
+const FLASH_ERASED: u8 = 0xff;
+
+pub(crate) struct Machine {
+    flash: Vec<u8>,
+    /// Backs the `0x800000..0x814000` span (SFR scratch + internal RAM).
+    ram: Vec<u8>,
+    pub timer: Timer,
+    pub icu: Icu,
+    pub adc: Adc,
+    pub last_unclaimed_sfr_read: u32,
+}
+
+impl Machine {
+    /// Build a machine from a firmware image (padded/truncated to 1 MB of flash).
+    pub fn new(firmware: &[u8]) -> Machine {
+        let mut flash = vec![FLASH_ERASED; FLASH_SIZE as usize];
+        let n = firmware.len().min(FLASH_SIZE as usize);
+        flash[..n].copy_from_slice(&firmware[..n]);
+        Machine {
+            flash,
+            ram: vec![0u8; RAM_LEN],
+            timer: Timer::new(),
+            icu: Icu::new(),
+            adc: Adc::new(),
+            last_unclaimed_sfr_read: 0,
+        }
+    }
+
+    /// Advance on-chip time by `cycles` and route any timer request into the ICU.
+    pub fn tick(&mut self, cycles: u64) {
+        self.adc.tick(cycles);
+        if let Some(iv) = self.timer.advance(cycles) {
+            self.icu.raise(iv);
+        }
+    }
+
+    #[inline]
+    fn ram_off(&self, a: u32) -> Option<usize> {
+        (RAM_BASE..RAM_END).contains(&a).then(|| (a - RAM_BASE) as usize)
+    }
+
+    fn peek(&self, a: u32, size: u32) -> u32 {
+        if let Some(off) = self.ram_off(a) {
+            return be_read(&self.ram, off, size);
+        }
+        if (a as usize) < self.flash.len() {
+            return be_read(&self.flash, a as usize, size);
+        }
+        0
+    }
+
+    fn read(&mut self, a: u32, size: u32) -> u32 {
+        if self.timer.handles(a) {
+            return self.timer.read(a, size);
+        }
+        if self.icu.handles(a) {
+            return self.icu.read(a, size);
+        }
+        if self.adc.handles(a) {
+            return self.adc.read(a, size);
+        }
+        if (RAM_BASE..SFR_END).contains(&a) {
+            self.last_unclaimed_sfr_read = a;
+        }
+        if let Some(off) = self.ram_off(a) {
+            return be_read(&self.ram, off, size);
+        }
+        if (a as usize) < self.flash.len() {
+            return be_read(&self.flash, a as usize, size);
+        }
+        0 // open bus
+    }
+
+    fn write(&mut self, a: u32, size: u32, v: u32) {
+        if self.timer.handles(a) {
+            return self.timer.write(a, size, v);
+        }
+        if self.icu.handles(a) {
+            return self.icu.write(a, size, v);
+        }
+        if self.adc.handles(a) {
+            return self.adc.write(a, size, v);
+        }
+        if let Some(off) = self.ram_off(a) {
+            be_write(&mut self.ram, off, size, v)
+        }
+        // Flash is read-only; out-of-range writes are dropped.
+    }
+}
+
+#[inline]
+fn be_read(buf: &[u8], off: usize, size: u32) -> u32 {
+    let mut v = 0u32;
+    for i in 0..size as usize {
+        v = (v << 8) | *buf.get(off + i).unwrap_or(&0) as u32;
+    }
+    v
+}
+
+#[inline]
+fn be_write(buf: &mut [u8], off: usize, size: u32, v: u32) {
+    for i in 0..size as usize {
+        let shift = 8 * (size as usize - 1 - i);
+        if let Some(b) = buf.get_mut(off + i) {
+            *b = (v >> shift) as u8;
+        }
+    }
+}
+
+impl Bus for Machine {
+    fn r8(&mut self, a: u32) -> u8 {
+        self.read(a, 1) as u8
+    }
+    fn w8(&mut self, a: u32, v: u8) {
+        self.write(a, 1, v as u32);
+    }
+    fn r16(&mut self, a: u32) -> u16 {
+        self.read(a, 2) as u16
+    }
+    fn w16(&mut self, a: u32, v: u16) {
+        self.write(a, 2, v as u32);
+    }
+    fn r32(&mut self, a: u32) -> u32 {
+        self.read(a, 4)
+    }
+    fn w32(&mut self, a: u32, v: u32) {
+        self.write(a, 4, v);
+    }
+}
+
+/// An M32R core bound to its [`Machine`], with EIT interrupt delivery.
+pub struct System {
+    cpu: Cpu,
+    mem: Machine,
+    interrupts_taken: u64,
+}
+
+impl System {
+    pub fn new(firmware: &[u8]) -> System {
+        System {
+            cpu: Cpu::new(),
+            mem: Machine::new(firmware),
+            interrupts_taken: 0,
+        }
+    }
+
+    pub fn cpu(&self) -> &Cpu {
+        &self.cpu
+    }
+    pub fn interrupts_taken(&self) -> u64 {
+        self.interrupts_taken
+    }
+    pub fn peek(&self, addr: u32, size: u32) -> u32 {
+        self.mem.peek(addr, size)
+    }
+    pub fn timer(&self) -> &Timer {
+        &self.mem.timer
+    }
+    pub fn icu(&self) -> &Icu {
+        &self.mem.icu
+    }
+    pub fn adc(&self) -> &Adc {
+        &self.mem.adc
+    }
+
+    pub fn adc_mut(&mut self) -> &mut Adc {
+        &mut self.mem.adc
+    }
+
+    /// Advance one CPU step, delivering a pending interrupt first if the core can
+    /// take one. Returns the CPU's `step` result (false only on decode failure).
+    pub fn step(&mut self) -> bool {
+        // Deliver the hardware way: present the source IVECT at 0x800000, then
+        // vector through the EIT entry to the firmware dispatcher.
+        if self.cpu.in_eit == 0
+            && self.cpu.interrupts_enabled()
+            && self.mem.icu.pending().is_some()
+        {
+            self.mem.icu.deliver();
+            self.cpu.take_interrupt(periph::icu::EI_VECTOR);
+            self.interrupts_taken += 1;
+            self.mem.tick(1);
+            return true;
+        }
+        let ok = self.cpu.step(&mut self.mem);
+        self.mem.tick(1);
+        ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flash_is_read_only_ram_is_writable() {
+        let mut m = Machine::new(&[0x12, 0x34, 0x56, 0x78]);
+        // Flash reads back the image, big-endian.
+        assert_eq!(m.r32(0), 0x1234_5678);
+        m.w32(0, 0xdead_beef); // dropped
+        assert_eq!(m.r32(0), 0x1234_5678);
+
+        // RAM proper is read/write.
+        m.w32(0x804000, 0xcafe_babe);
+        assert_eq!(m.r32(0x804000), 0xcafe_babe);
+    }
+
+    #[test]
+    fn sfr_addresses_route_to_devices() {
+        let mut m = Machine::new(&[]);
+        // Timer TOPCEN (0x8002fe) is a device register, not backing RAM.
+        m.w16(periph::timer::TOPCEN, 1);
+        assert!(m.timer.is_enabled());
+        // ICU vector register (0x800000) is a device register.
+        m.icu.raise(0x00bc);
+        m.icu.deliver();
+        assert_eq!(m.r16(periph::icu::IVECT), 0x00bc);
+    }
+
+    #[test]
+    fn unclaimed_sfr_addr_is_ram_scratch() {
+        let mut m = Machine::new(&[]);
+        // 0x800600 is inside the SFR block but claimed by no modeled device -> scratch.
+        m.w32(0x800600, 0x0011_2233);
+        assert_eq!(m.r32(0x800600), 0x0011_2233);
+    }
+
+    #[test]
+    fn reset_vector_is_bra_to_handler() {
+        // flash[0] = BRA; executing it from pc=0 should jump into the handler.
+        let fw = include_bytes!("../../firmware/bmu.bin");
+        let mut sys = System::new(fw);
+        assert_eq!(sys.cpu.pc, 0);
+        sys.step();
+        assert_eq!(sys.cpu.pc, 0x3944, "BMU reset handler");
+    }
+
+    /// Make sure the BMU boots
+    #[test]
+    fn bmu_runs_under_timer_icu() {
+        // Landmarks along the organic boot->tick->scheduler path.
+        const DISPATCHER: u32 = 0x3994; // flash[0x80] BRA target
+        const DEMUX: u32 = 0x8ce4; // sched_group_demux_fast
+
+        let fw = include_bytes!("../../firmware/bmu.bin");
+        let mut sys = System::new(fw);
+
+        let mut armed = false;
+        let mut reached_dispatcher = false;
+        let mut reached_demux = false;
+        const MAX_STEPS: u64 = 20_000_000;
+        for i in 0..MAX_STEPS {
+            armed |= sys.mem.timer.is_enabled();
+            reached_dispatcher |= sys.cpu.pc == DISPATCHER;
+            reached_demux |= sys.cpu.pc == DEMUX;
+            if !sys.step() {
+                panic!("decode failure at pc={:#010x} (step {i})", sys.cpu.pc);
+            }
+            // Success as soon as the first tick has been delivered and the
+            // scheduler demux has been entered from it.
+            if sys.interrupts_taken >= 1 && reached_demux {
+                break;
+            }
+        }
+
+        assert!(armed, "firmware never armed TOP0 (TOPCEN) organically");
+        assert!(
+            sys.interrupts_taken >= 1,
+            "no TOP0 tick was delivered via the ICU/EIT"
+        );
+        assert!(reached_dispatcher, "interrupt did not vector into the dispatcher");
+        assert!(
+            reached_demux,
+            "tick did not reach the fast-tick scheduler demux (0x8ce4)"
+        );
+        // Stack pointer was set into high RAM by the reset handler (R15/SPI fix).
+        assert!(
+            (0x808000..=RAM_END).contains(&sys.cpu.r[15]),
+            "SP not initialized into RAM: {:#010x}",
+            sys.cpu.r[15]
+        );
+    }
+
+    /// Make sure the EV-ECU boots
+    #[test]
+    fn ecu_boots_and_reaches_dispatcher() {
+        const RESET_HANDLER: u32 = 0x393c; // flash[0] BRA target (ECU)
+        const DISPATCHER: u32 = 0x398c; // flash[0x80] BRA target (ECU)
+
+        let fw = include_bytes!("../../firmware/ev-ecu.bin");
+        let mut sys = System::new(fw);
+
+        // Reset vector branches to the ECU reset handler.
+        assert_eq!(sys.cpu.pc, 0);
+        sys.step();
+        assert_eq!(sys.cpu.pc, RESET_HANDLER, "ECU reset handler");
+
+        let mut reached_dispatcher = false;
+        const MAX_STEPS: u64 = 20_000_000;
+        for i in 0..MAX_STEPS {
+            reached_dispatcher |= sys.cpu.pc == DISPATCHER;
+            if !sys.step() {
+                panic!("decode failure at pc={:#010x} (step {i})", sys.cpu.pc);
+            }
+            if sys.interrupts_taken >= 1 && reached_dispatcher {
+                break;
+            }
+        }
+
+        assert!(
+            reached_dispatcher && sys.interrupts_taken >= 1,
+            "ECU interrupt path did not reach the dispatcher (taken={})",
+            sys.interrupts_taken
+        );
+        assert!(
+            (0x808000..=RAM_END).contains(&sys.cpu.r[15]),
+            "ECU SP not initialized into RAM: {:#010x}",
+            sys.cpu.r[15]
+        );
+    }
+}

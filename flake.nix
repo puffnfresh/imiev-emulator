@@ -10,7 +10,7 @@
   outputs = { self, nixpkgs, imiev-hacking-tools }: {
     packages = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (system:
       let pkgs = nixpkgs.legacyPackages."${system}"; in rec {
-        default = imiev-hacking-tools.outPath;
+        default = pkgs.callPackage ./nix/workspace.nix { };
 
         ghidra-m32r = pkgs.callPackage ./nix/ghidra-m32r.nix {
           inherit imiev-hacking-tools;
@@ -27,8 +27,6 @@
           mkdir -p "$TESTDATA"
           install -m 0644 ${test-suite-rom}/* "$TESTDATA"
         '';
-
-        m32r-emulator = pkgs.callPackage ./nix/m32r-emulator.nix { };
       }
     );
   };

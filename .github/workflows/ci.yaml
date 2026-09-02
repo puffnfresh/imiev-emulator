@@ -13,5 +13,5 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Build m32r-emulator
-        run: nix build .#m32r-emulator --print-build-logs
+      - name: Build + test the emulator workspace
+        run: nix build --print-build-logs

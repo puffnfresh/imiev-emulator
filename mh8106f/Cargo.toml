@@ -1,0 +1,10 @@
+[package]
+name = "mh8106f"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+m32r-emulator = { path = "../m32r-emulator" }
