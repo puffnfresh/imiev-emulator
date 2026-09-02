@@ -22,6 +22,10 @@ const CAN0_BASE: u32 = 0x0080_1000;
 const CAN1_BASE: u32 = 0x0080_1400;
 const CAN1_RX_IVECT: u16 = 0x0110;
 
+const ITOP10CR: u32 = 0x0080_0077;
+const SLOW_TICK_REQ: u8 = 0x10;
+const SLOW_TICK_IVECT: u16 = 0x00b0;
+
 pub const FLASH_BASE: u32 = 0x0000_0000;
 pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
 pub const RAM_BASE: u32 = 0x0080_0000;
@@ -72,6 +76,16 @@ impl Machine {
     #[inline]
     fn ram_off(&self, a: u32) -> Option<usize> {
         (RAM_BASE..RAM_END).contains(&a).then(|| (a - RAM_BASE) as usize)
+    }
+
+    fn take_slow_tick_request(&mut self) -> bool {
+        let off = (ITOP10CR - RAM_BASE) as usize;
+        if self.ram[off] & SLOW_TICK_REQ != 0 {
+            self.ram[off] &= !SLOW_TICK_REQ;
+            true
+        } else {
+            false
+        }
     }
 
     fn peek(&self, a: u32, size: u32) -> u32 {
@@ -209,6 +223,10 @@ impl System {
         self.mem.icu.raise(iv);
     }
 
+    pub fn inject_can0(&mut self, slot: u32, sid: u16, data: &[u8]) {
+        self.mem.can0.deliver_rx(slot, sid, data);
+    }
+
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
         self.mem.can0.take_tx()
     }
@@ -222,15 +240,22 @@ impl System {
     pub fn step(&mut self) -> bool {
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
-        if self.cpu.in_eit == 0
-            && self.cpu.interrupts_enabled()
-            && self.mem.icu.pending().is_some()
-        {
-            self.mem.icu.deliver();
-            self.cpu.take_interrupt(periph::icu::EI_VECTOR);
-            self.interrupts_taken += 1;
-            self.mem.tick(1);
-            return true;
+        if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
+            // The chained slow tick takes priority over the fast tick.
+            if self.mem.take_slow_tick_request() {
+                self.mem.icu.present(SLOW_TICK_IVECT);
+                self.cpu.take_interrupt(periph::icu::EI_VECTOR);
+                self.interrupts_taken += 1;
+                self.mem.tick(1);
+                return true;
+            }
+            if self.mem.icu.pending().is_some() {
+                self.mem.icu.deliver();
+                self.cpu.take_interrupt(periph::icu::EI_VECTOR);
+                self.interrupts_taken += 1;
+                self.mem.tick(1);
+                return true;
+            }
         }
         let ok = self.cpu.step(&mut self.mem);
         self.mem.tick(1);
@@ -419,5 +444,40 @@ mod tests {
             "battery model may still be hanging (interrupts_taken={})",
             sys.interrupts_taken
         );
+    }
+
+    #[test]
+    fn bmu_records_injected_cell_voltage() {
+        const CELL_V0: u32 = 0x0080_7f30 + 7; // board array entry 0, data[4:5]
+        const CMU_RX_SLOT: u32 = 30;
+
+        fn record(vraw: u16) -> u16 {
+            let fw = include_bytes!("../../firmware/bmu.bin");
+            let mut sys = System::new(fw);
+            let [vh, vl] = vraw.to_be_bytes();
+            let frame = [0u8, 0, 75, 0, vh, vl, vh, vl];
+            let mut sids = Vec::new();
+            for board in 1..=12u16 {
+                for cell in [1u16, 3, 5, 7] {
+                    sids.push(0x600 | (board << 4) | cell);
+                }
+            }
+            let mut si = 0usize;
+            for _ in 0..8_000_000u64 {
+                if sys.cpu.in_eit == 0 && sys.mem.icu.pending().is_none() {
+                    sys.inject_can1(CMU_RX_SLOT, sids[si % sids.len()], &frame);
+                    si += 1;
+                }
+                sys.step();
+                if sys.peek(CELL_V0, 2) as u16 == vraw {
+                    break; // recorded the injected value
+                }
+            }
+            sys.peek(CELL_V0, 2) as u16
+        }
+
+        // 3.7 V -> 320, 3.9 V -> 360.
+        assert_eq!(record(320), 320, "board array should record 3.7 V");
+        assert_eq!(record(360), 360, "board array should record 3.9 V (tracks, not constant)");
     }
 }

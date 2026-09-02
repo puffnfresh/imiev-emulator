@@ -47,6 +47,10 @@ impl Icu {
         self.ivect = iv;
         Some(iv)
     }
+
+    pub fn present(&mut self, ivect: u16) {
+        self.ivect = ivect;
+    }
 }
 
 impl Peripheral for Icu {
