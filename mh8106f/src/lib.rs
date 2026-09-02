@@ -15,8 +15,12 @@
 use m32r_emulator::{Bus, Cpu};
 
 pub mod periph;
-pub use periph::{Adc, Can1, Icu, Timer};
+pub use periph::{Adc, CanFrame, CanModule, Icu, Timer};
 use periph::Peripheral;
+
+const CAN0_BASE: u32 = 0x0080_1000;
+const CAN1_BASE: u32 = 0x0080_1400;
+const CAN1_RX_IVECT: u16 = 0x0110;
 
 pub const FLASH_BASE: u32 = 0x0000_0000;
 pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
@@ -33,7 +37,8 @@ pub(crate) struct Machine {
     pub timer: Timer,
     pub icu: Icu,
     pub adc: Adc,
-    pub can1: Can1,
+    pub can0: CanModule,
+    pub can1: CanModule,
     pub last_unclaimed_sfr_read: u32,
 }
 
@@ -49,7 +54,9 @@ impl Machine {
             timer: Timer::new(),
             icu: Icu::new(),
             adc: Adc::new(),
-            can1: Can1::new(),
+            // CAN0 RX isn't modeled yet, so its RX IVECT is a placeholder.
+            can0: CanModule::new(CAN0_BASE, 0),
+            can1: CanModule::new(CAN1_BASE, CAN1_RX_IVECT),
             last_unclaimed_sfr_read: 0,
         }
     }
@@ -77,18 +84,21 @@ impl Machine {
         0
     }
 
+    fn devices(&mut self) -> [&mut dyn Peripheral; 5] {
+        [
+            &mut self.timer,
+            &mut self.icu,
+            &mut self.adc,
+            &mut self.can0,
+            &mut self.can1,
+        ]
+    }
+
     fn read(&mut self, a: u32, size: u32) -> u32 {
-        if self.timer.handles(a) {
-            return self.timer.read(a, size);
-        }
-        if self.icu.handles(a) {
-            return self.icu.read(a, size);
-        }
-        if self.adc.handles(a) {
-            return self.adc.read(a, size);
-        }
-        if self.can1.handles(a) {
-            return self.can1.read(a, size);
+        for dev in self.devices() {
+            if dev.handles(a) {
+                return dev.read(a, size);
+            }
         }
         if (RAM_BASE..SFR_END).contains(&a) {
             self.last_unclaimed_sfr_read = a;
@@ -103,17 +113,10 @@ impl Machine {
     }
 
     fn write(&mut self, a: u32, size: u32, v: u32) {
-        if self.timer.handles(a) {
-            return self.timer.write(a, size, v);
-        }
-        if self.icu.handles(a) {
-            return self.icu.write(a, size, v);
-        }
-        if self.adc.handles(a) {
-            return self.adc.write(a, size, v);
-        }
-        if self.can1.handles(a) {
-            return self.can1.write(a, size, v);
+        for dev in self.devices() {
+            if dev.handles(a) {
+                return dev.write(a, size, v);
+            }
         }
         if let Some(off) = self.ram_off(a) {
             be_write(&mut self.ram, off, size, v)
@@ -204,6 +207,14 @@ impl System {
     pub fn inject_can1(&mut self, slot: u32, sid: u16, data: &[u8]) {
         let iv = self.mem.can1.deliver_rx(slot, sid, data);
         self.mem.icu.raise(iv);
+    }
+
+    pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
+        self.mem.can0.take_tx()
+    }
+
+    pub fn take_can1_tx(&mut self) -> Vec<CanFrame> {
+        self.mem.can1.take_tx()
     }
 
     /// Advance one CPU step, delivering a pending interrupt first if the core can

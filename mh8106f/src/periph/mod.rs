@@ -8,7 +8,7 @@ pub mod icu;
 pub mod timer;
 
 pub use adc::Adc;
-pub use can::Can1;
+pub use can::{CanFrame, CanModule};
 pub use icu::Icu;
 pub use timer::Timer;
 

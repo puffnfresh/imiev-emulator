@@ -1,24 +1,21 @@
-//! The MH8106F has two CAN modules. At the moment this only handles receive
-//! for CAN1.
-//!
-//! Raises CAN1-RX interrupt.
+//! The MH8106F has two CAN modules.
 
 use super::Peripheral;
 use crate::{be_read, be_write};
 
-pub const CAN1_BASE: u32 = 0x0080_1400;
-pub const CAN1_END: u32 = 0x0080_1800; // exclusive; block is 0x400 wide
-pub const SLIST: u32 = 0x0080_140C; // slot interrupt/RX status (32-bit)
-pub const SLOT_CTRL_BASE: u32 = 0x0080_1450; // C1MSLnCNT = SLOT_CTRL_BASE + n
-pub const SLOT_BASE: u32 = 0x0080_1500; // slot n at SLOT_BASE + n*SLOT_STRIDE
-pub const SLOT_STRIDE: u32 = 0x10;
+pub const BLOCK_SIZE: u32 = 0x400; // one CAN module's register block
+
+const SLIST: u32 = 0x0c; // slot interrupt/status, 32-bit (offset from base)
+const SLOT_CTRL_BASE: u32 = 0x50; // CnMSLnCNT = base + SLOT_CTRL_BASE + n
+const SLOT_CTRL_END: u32 = SLOT_CTRL_BASE + NUM_SLOTS;
+const SLOT_BASE: u32 = 0x100; // slot n at base + SLOT_BASE + n*SLOT_STRIDE
+const SLOT_STRIDE: u32 = 0x10;
 pub const NUM_SLOTS: u32 = 32;
 
-pub const CAN1_RX_IVECT: u16 = 0x0110;
-
-// Per-slot control byte (`C1MSLnCNT`): bits 7:6 = mode (0b01 = receive), bit0 = valid.
-const CNT_MODE_RX: u8 = 0x40;
-const CNT_VALID: u8 = 0x01;
+// Slot-control byte bits (MSB-first labelling -> these byte values).
+const TR: u8 = 0x80; // transmit request
+const RR: u8 = 0x40; // receive request
+const TRFIN: u8 = 0x01; // transmit/receive finished
 
 // Message-slot field offsets, relative to the slot base.
 const SLOT_SID0: u32 = 0x00;
@@ -26,36 +23,55 @@ const SLOT_SID1: u32 = 0x01;
 const SLOT_DLC: u32 = 0x05;
 const SLOT_DATA0: u32 = 0x06; // Data0..Data7 at +0x06..+0x0D
 
-pub struct Can1 {
-    regs: [u8; (CAN1_END - CAN1_BASE) as usize],
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanFrame {
+    pub id: u16,
+    pub dlc: u8,
+    pub data: [u8; 8],
 }
 
-impl Default for Can1 {
-    fn default() -> Self {
-        Self::new()
-    }
+fn encode_sid(id: u16) -> (u8, u8) {
+    (((id >> 6) & 0x1f) as u8, (id & 0x3f) as u8)
 }
 
-impl Can1 {
-    pub fn new() -> Can1 {
-        Can1 {
-            regs: [0; (CAN1_END - CAN1_BASE) as usize],
+fn decode_sid(sid0: u8, sid1: u8) -> u16 {
+    ((sid0 as u16 & 0x1f) << 6) | (sid1 as u16 & 0x3f)
+}
+
+pub struct CanModule {
+    base: u32,
+    rx_ivect: u16,
+    regs: [u8; BLOCK_SIZE as usize],
+    /// Frames the firmware has transmitted (TR set), for the bench to observe.
+    tx: Vec<CanFrame>,
+}
+
+impl CanModule {
+    pub fn new(base: u32, rx_ivect: u16) -> CanModule {
+        CanModule {
+            base,
+            rx_ivect,
+            regs: [0; BLOCK_SIZE as usize],
+            tx: Vec::new(),
         }
     }
 
     #[inline]
-    fn off(a: u32) -> usize {
-        (a - CAN1_BASE) as usize
+    fn off(&self, a: u32) -> usize {
+        (a - self.base) as usize
     }
 
-    /// Write SID/DLC/data registers, flag it valid, and set bit in the slot
-    /// interrupt status. Returns the CAN1-RX interrupt vector so the caller can
-    /// raise it on the ICU.
-    pub fn deliver_rx(&mut self, slot: u32, sid: u16, data: &[u8]) -> u16 {
+    #[inline]
+    fn slot_field(&self, slot: u32, field: u32) -> usize {
+        (SLOT_BASE + slot * SLOT_STRIDE + field) as usize
+    }
+
+    pub fn deliver_rx(&mut self, slot: u32, id: u16, data: &[u8]) -> u16 {
         debug_assert!(slot < NUM_SLOTS, "slot out of range");
-        let base = Self::off(SLOT_BASE + slot * SLOT_STRIDE);
-        self.regs[base + SLOT_SID0 as usize] = ((sid >> 6) & 0x1f) as u8;
-        self.regs[base + SLOT_SID1 as usize] = (sid & 0x3f) as u8;
+        let base = self.slot_field(slot, 0);
+        let (sid0, sid1) = encode_sid(id);
+        self.regs[base + SLOT_SID0 as usize] = sid0;
+        self.regs[base + SLOT_SID1 as usize] = sid1;
         let len = data.len().min(8);
         self.regs[base + SLOT_DLC as usize] = len as u8;
         for i in 0..8 {
@@ -63,26 +79,53 @@ impl Can1 {
         }
         self.regs[base + SLOT_DATA0 as usize..base + SLOT_DATA0 as usize + len]
             .copy_from_slice(&data[..len]);
-        // Slot control: receive mode + message valid.
-        self.regs[Self::off(SLOT_CTRL_BASE + slot)] = CNT_MODE_RX | CNT_VALID;
-        // Slot interrupt status: set this slot's receive-complete bit (slot 0 is the MSB).
-        let slist = be_read(&self.regs, Self::off(SLIST), 4) | (0x8000_0000u32 >> slot);
-        be_write(&mut self.regs, Self::off(SLIST), 4, slist);
-        CAN1_RX_IVECT
+        // Receive slot, finished receiving.
+        self.regs[(SLOT_CTRL_BASE + slot) as usize] = RR | TRFIN;
+        let slist = be_read(&self.regs, SLIST as usize, 4) | (0x8000_0000u32 >> slot);
+        be_write(&mut self.regs, SLIST as usize, 4, slist);
+        self.rx_ivect
+    }
+
+    pub fn take_tx(&mut self) -> Vec<CanFrame> {
+        std::mem::take(&mut self.tx)
+    }
+
+    fn transmit(&mut self, slot: u32) {
+        let base = self.slot_field(slot, 0);
+        let id = decode_sid(
+            self.regs[base + SLOT_SID0 as usize],
+            self.regs[base + SLOT_SID1 as usize],
+        );
+        let dlc = self.regs[base + SLOT_DLC as usize];
+        let mut data = [0u8; 8];
+        data.copy_from_slice(&self.regs[base + SLOT_DATA0 as usize..base + SLOT_DATA0 as usize + 8]);
+        self.tx.push(CanFrame { id, dlc, data });
+        // Completion: clear the request, mark finished, raise the slot's status bit.
+        let ctrl = (SLOT_CTRL_BASE + slot) as usize;
+        self.regs[ctrl] = (self.regs[ctrl] & !TR) | TRFIN;
+        let slist = be_read(&self.regs, SLIST as usize, 4) | (0x8000_0000u32 >> slot);
+        be_write(&mut self.regs, SLIST as usize, 4, slist);
     }
 }
 
-impl Peripheral for Can1 {
+impl Peripheral for CanModule {
     fn handles(&self, a: u32) -> bool {
-        (CAN1_BASE..CAN1_END).contains(&a)
+        (self.base..self.base + BLOCK_SIZE).contains(&a)
     }
 
     fn read(&mut self, a: u32, size: u32) -> u32 {
-        be_read(&self.regs, Self::off(a), size)
+        be_read(&self.regs, self.off(a), size)
     }
 
     fn write(&mut self, a: u32, size: u32, v: u32) {
-        be_write(&mut self.regs, Self::off(a), size, v);
+        let off = self.off(a);
+        be_write(&mut self.regs, off, size, v);
+        for a in a..a + size {
+            let off = a - self.base;
+            if (SLOT_CTRL_BASE..SLOT_CTRL_END).contains(&off) && self.regs[off as usize] & TR != 0 {
+                self.transmit(off - SLOT_CTRL_BASE);
+            }
+        }
     }
 }
 
@@ -90,51 +133,73 @@ impl Peripheral for Can1 {
 mod tests {
     use super::*;
 
-    fn slot_addr(n: u32, field: u32) -> u32 {
-        SLOT_BASE + n * SLOT_STRIDE + field
+    const CAN1_BASE: u32 = 0x0080_1400;
+
+    fn slot_ctrl(base: u32, n: u32) -> u32 {
+        base + SLOT_CTRL_BASE + n
+    }
+    fn slot_field(base: u32, n: u32, field: u32) -> u32 {
+        base + SLOT_BASE + n * SLOT_STRIDE + field
     }
 
     #[test]
     fn deliver_rx_populates_slot_and_status() {
-        let mut can = Can1::new();
-        let slot = 30; // any slot; the chip is agnostic about what it carries
-        let iv = can.deliver_rx(slot, 0x611, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
-        assert_eq!(iv, CAN1_RX_IVECT);
-
-        // SID encoded so the firmware's decode `(SID0&0x1f)*64 + SID1` == 0x611.
-        let sid0 = can.read(slot_addr(slot, SLOT_SID0), 1) as u16;
-        let sid1 = can.read(slot_addr(slot, SLOT_SID1), 1) as u16;
-        assert_eq!((sid0 & 0x1f) * 64 + sid1, 0x611);
-
-        // DLC + data bytes readable at their register offsets.
-        assert_eq!(can.read(slot_addr(slot, SLOT_DLC), 1), 8);
-        assert_eq!(can.read(slot_addr(slot, SLOT_DATA0), 1), 0x10);
-        assert_eq!(can.read(slot_addr(slot, SLOT_DATA0 + 7), 1), 0x80);
-
-        // Slot control reads RX + valid; the firmware's checks are (CNT&0xc0)==0x40
-        // and (CNT&0x41)==0x41.
-        let cnt = can.read(SLOT_CTRL_BASE + slot, 1) as u8;
-        assert_eq!(cnt & 0xc0, CNT_MODE_RX); // bits 7:6 = receive mode
-        assert_eq!(cnt & 0x41, 0x41);
-
-        // Slot interrupt status bit for slot N is 0x8000_0000 >> N.
-        assert_eq!(can.read(SLIST, 4) & (0x8000_0000u32 >> slot), 0x8000_0000u32 >> slot);
-    }
-
-    #[test]
-    fn config_registers_are_readback_storage() {
-        let mut can = Can1::new();
-        can.write(CAN1_BASE + 0x10, 2, 0x4980); // e.g. configuration register
-        assert_eq!(can.read(CAN1_BASE + 0x10, 2), 0x4980);
-    }
-
-    #[test]
-    fn firmware_can_clear_slist_bit() {
-        let mut can = Can1::new();
+        let mut can = CanModule::new(CAN1_BASE, 0x0110);
         let slot = 30;
-        can.deliver_rx(slot, 0x611, &[0; 8]);
-        // Firmware clears a serviced slot by writing ~(0x8000_0000 >> slot).
-        can.write(SLIST, 4, !(0x8000_0000u32 >> slot));
-        assert_eq!(can.read(SLIST, 4) & (0x8000_0000u32 >> slot), 0);
+        let iv = can.deliver_rx(slot, 0x611, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        assert_eq!(iv, 0x0110);
+
+        let sid0 = can.read(slot_field(CAN1_BASE, slot, SLOT_SID0), 1) as u8;
+        let sid1 = can.read(slot_field(CAN1_BASE, slot, SLOT_SID1), 1) as u8;
+        assert_eq!(decode_sid(sid0, sid1), 0x611);
+        assert_eq!(can.read(slot_field(CAN1_BASE, slot, SLOT_DLC), 1), 8);
+        assert_eq!(can.read(slot_field(CAN1_BASE, slot, SLOT_DATA0 + 7), 1), 0x80);
+
+        let cnt = can.read(slot_ctrl(CAN1_BASE, slot), 1) as u8;
+        assert_eq!(cnt & (RR | TRFIN), RR | TRFIN); // receive slot, finished
+        assert_eq!(cnt & TR, 0); // not a transmit request
+        assert_eq!(
+            can.read(CAN1_BASE + SLIST, 4) & (0x8000_0000u32 >> slot),
+            0x8000_0000u32 >> slot
+        );
+    }
+
+    #[test]
+    fn sid_round_trips() {
+        for id in [0x000, 0x373, 0x374, 0x375, 0x611, 0x6c4, 0x7ff] {
+            let (s0, s1) = encode_sid(id);
+            assert_eq!(decode_sid(s0, s1), id, "sid {id:#x}");
+        }
+    }
+
+    #[test]
+    fn firmware_transmit_is_captured() {
+        let mut can = CanModule::new(0x0080_1000, 0x0000); // CAN0
+        let base = 0x0080_1000;
+        let slot = 15;
+        // Firmware builds the frame: SID, DLC, data.
+        let (s0, s1) = encode_sid(0x374);
+        can.write(slot_field(base, slot, SLOT_SID0), 1, s0 as u32);
+        can.write(slot_field(base, slot, SLOT_SID1), 1, s1 as u32);
+        can.write(slot_field(base, slot, SLOT_DLC), 1, 8);
+        for i in 0..8u32 {
+            can.write(slot_field(base, slot, SLOT_DATA0 + i), 1, 0xa0 + i);
+        }
+        assert!(can.take_tx().is_empty(), "no frame until TR is set");
+
+        // Then sets the transmit request (TR).
+        can.write(slot_ctrl(base, slot), 1, TR as u32);
+        let tx = can.take_tx();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(tx[0].id, 0x374);
+        assert_eq!(tx[0].dlc, 8);
+        assert_eq!(tx[0].data[0], 0xa0);
+        assert_eq!(tx[0].data[7], 0xa7);
+        // Draining is one-shot.
+        assert!(can.take_tx().is_empty());
+        // TR cleared, TRFIN set, slot status bit raised.
+        let cnt = can.read(slot_ctrl(base, slot), 1) as u8;
+        assert_eq!(cnt & TR, 0);
+        assert_eq!(cnt & TRFIN, TRFIN);
     }
 }
