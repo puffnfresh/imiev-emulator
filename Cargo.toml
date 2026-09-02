@@ -3,4 +3,5 @@ resolver = "3"
 members = [
     "m32r-emulator",
     "mh8106f",
+    "imiev-bench",
 ]
