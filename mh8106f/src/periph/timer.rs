@@ -22,6 +22,9 @@
 
 use super::Peripheral;
 
+pub const TOPIR0: u32 = 0x0080_0230;
+const TOPIS_MASK: u8 = 0x3f; // TOPIS0..TOPIS5 occupy the low six bits
+
 pub const TOP0CT: u32 = 0x0080_0240; // live down-counter (read gives current count)
 pub const TOP0RL: u32 = 0x0080_0242; // reload value
 pub const PRS0: u32 = 0x0080_0202; // prescaler 0
@@ -81,6 +84,8 @@ pub struct Timer {
     prescale_accum: u32,
     /// Elapsed CPU cycles.
     cycles: u64,
+    /// TOPIR0 (0x800230) interrupt-request status: bit N = TOP channel N fired.
+    topis: u8,
 }
 
 impl Default for Timer {
@@ -100,11 +105,16 @@ impl Timer {
             enabled: false,
             prescale_accum: 0,
             cycles: 0,
+            topis: 0,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn raise_topis(&mut self, ch: u8) {
+        self.topis |= 1 << ch;
     }
 
     fn prescale_div(&self) -> u32 {
@@ -135,11 +145,12 @@ impl Timer {
 
 impl Peripheral for Timer {
     fn handles(&self, a: u32) -> bool {
-        matches!(a, TOP0CT | TOP0RL | PRS0 | PRS1 | TOPPRO | TOPCEN) || is_freerun_counter(a)
+        matches!(a, TOPIR0 | TOP0CT | TOP0RL | PRS0 | PRS1 | TOPPRO | TOPCEN) || is_freerun_counter(a)
     }
 
     fn read(&mut self, a: u32, size: u32) -> u32 {
         match a {
+            TOPIR0 => self.topis as u32,
             TOP0CT => self.count as u32,
             TOP0RL => self.reload as u32,
             PRS0 => self.prs0 as u32,
@@ -156,6 +167,7 @@ impl Peripheral for Timer {
 
     fn write(&mut self, a: u32, _size: u32, v: u32) {
         match a {
+            TOPIR0 => self.topis &= (v as u8) | !TOPIS_MASK,
             TOP0CT => self.count = v as u16,
             TOP0RL => self.reload = v as u16,
             PRS0 => self.prs0 = v as u8,
@@ -208,6 +220,17 @@ mod tests {
         }
         assert_eq!(fires, 1, "exactly one tick in the first period");
         assert_eq!(first_fire_at, Some(6 * 40));
+    }
+
+    #[test]
+    fn topir0_is_write_zero_to_clear() {
+        let mut t = Timer::new();
+        t.raise_topis(0); // hardware sets TOPIS0 (TOP0 fired)
+        assert_eq!(t.read(TOPIR0, 1) & 0x3f, 0x01);
+        // The demux clears the serviced bit by writing back ~serviced (=0x3e here).
+        // Write-0-clear: bit0 (a 0 in 0x3e) clears; the 1 bits must NOT set 1..5.
+        t.write(TOPIR0, 1, 0x3e);
+        assert_eq!(t.read(TOPIR0, 1) & 0x3f, 0x00, "clear-write must not set sibling bits");
     }
 
     #[test]

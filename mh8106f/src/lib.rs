@@ -26,9 +26,6 @@ const ITOP10CR: u32 = 0x0080_0077;
 const SLOW_TICK_REQ: u8 = 0x10;
 const SLOW_TICK_IVECT: u16 = 0x00b0;
 
-const ICU_GROUP_STATUS: u32 = 0x0080_0230;
-const FAST_TICK_SUBSRC: u8 = 0x01;
-
 pub const FLASH_BASE: u32 = 0x0000_0000;
 pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
 pub const RAM_BASE: u32 = 0x0080_0000;
@@ -91,8 +88,7 @@ impl Machine {
     }
 
     fn raise_fast_tick_subsource(&mut self) {
-        let off = (ICU_GROUP_STATUS - RAM_BASE) as usize;
-        self.ram[off] |= FAST_TICK_SUBSRC;
+        self.timer.raise_topis(0);
     }
 
     fn peek(&self, a: u32, size: u32) -> u32 {
@@ -363,6 +359,31 @@ mod tests {
             "SP not initialized into RAM: {:#010x}",
             sys.cpu.r[15]
         );
+    }
+
+    #[test]
+    fn bmu_adc_only_broadcasts_battery_frames() {
+        let fw = include_bytes!("../../firmware/bmu.bin");
+        let mut sys = System::new(fw);
+        for (ch, v) in [(0usize, 0x300u16), (4, 0x300), (1, 0x330), (2, 0x200), (3, 0x200), (9, 0x800), (0xB, 0x800)] {
+            sys.mem.adc.set_channel(ch, v);
+        }
+        let mut d373: Option<[u8; 8]> = None;
+        for _ in 0..40_000_000u64 {
+            sys.step();
+            for f in sys.mem.can0.take_tx() {
+                if f.id == 0x373 {
+                    d373 = Some(f.data);
+                }
+            }
+            if d373.is_some() {
+                break;
+            }
+        }
+        let d = d373.unwrap_or_else(|| panic!("BMU never broadcast 0x373 (taken={})", sys.interrupts_taken));
+        assert!(d.iter().any(|&b| b != 0), "0x373 payload all zero: {d:02x?}");
+        // Multiple ticks serviced (proves the ISR now returns via RTE, not hangs).
+        assert!(sys.interrupts_taken > 1, "scheduler not running (taken={})", sys.interrupts_taken);
     }
 
     /// Make sure the EV-ECU boots
