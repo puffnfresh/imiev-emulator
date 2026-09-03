@@ -12,6 +12,7 @@ const AD0DT_END: u32 = AD0DT_BASE + AD0_CHANNELS * AD0DT_STRIDE;
 const RESULT_MASK: u16 = 0x0fff;
 
 const CONVERT_TICKS: u32 = 2;
+const MIDSCALE: u16 = 0x800;
 
 pub struct Adc {
     results: [u16; AD0_CHANNELS as usize],
@@ -28,7 +29,7 @@ impl Default for Adc {
 impl Adc {
     pub fn new() -> Adc {
         Adc {
-            results: [0; AD0_CHANNELS as usize],
+            results: [MIDSCALE; AD0_CHANNELS as usize],
             sim0: 0,
             converting: 0,
         }
@@ -90,6 +91,6 @@ mod tests {
         let mut adc = Adc::new();
         adc.set_channel(5, 0x02c0);
         assert_eq!(adc.read(AD0DT_BASE + 5 * 2, 2), 0x02c0);
-        assert_eq!(adc.read(AD0DT_BASE, 2), 0); // default
+        assert_eq!(adc.read(AD0DT_BASE, 2), MIDSCALE as u32);
     }
 }

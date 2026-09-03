@@ -26,6 +26,9 @@ const ITOP10CR: u32 = 0x0080_0077;
 const SLOW_TICK_REQ: u8 = 0x10;
 const SLOW_TICK_IVECT: u16 = 0x00b0;
 
+const ICU_GROUP_STATUS: u32 = 0x0080_0230;
+const FAST_TICK_SUBSRC: u8 = 0x01;
+
 pub const FLASH_BASE: u32 = 0x0000_0000;
 pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
 pub const RAM_BASE: u32 = 0x0080_0000;
@@ -79,13 +82,17 @@ impl Machine {
     }
 
     fn take_slow_tick_request(&mut self) -> bool {
-        let off = (ITOP10CR - RAM_BASE) as usize;
-        if self.ram[off] & SLOW_TICK_REQ != 0 {
-            self.ram[off] &= !SLOW_TICK_REQ;
+        if self.icu.icr_raw(ITOP10CR) & SLOW_TICK_REQ != 0 {
+            self.icu.icr_clear(ITOP10CR, SLOW_TICK_REQ);
             true
         } else {
             false
         }
+    }
+
+    fn raise_fast_tick_subsource(&mut self) {
+        let off = (ICU_GROUP_STATUS - RAM_BASE) as usize;
+        self.ram[off] |= FAST_TICK_SUBSRC;
     }
 
     fn peek(&self, a: u32, size: u32) -> u32 {
@@ -240,7 +247,7 @@ impl System {
     pub fn step(&mut self) -> bool {
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
-        if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
+        if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() && self.cpu.pc >= 0x0004_0000 {
             // The chained slow tick takes priority over the fast tick.
             if self.mem.take_slow_tick_request() {
                 self.mem.icu.present(SLOW_TICK_IVECT);
@@ -251,6 +258,7 @@ impl System {
             }
             if self.mem.icu.pending().is_some() {
                 self.mem.icu.deliver();
+                self.mem.raise_fast_tick_subsource();
                 self.cpu.take_interrupt(periph::icu::EI_VECTOR);
                 self.interrupts_taken += 1;
                 self.mem.tick(1);
@@ -287,6 +295,7 @@ mod tests {
         m.w16(periph::timer::TOPCEN, 1);
         assert!(m.timer.is_enabled());
         // ICU vector register (0x800000) is a device register.
+        m.w8(0x0080_0074, 0x04);
         m.icu.raise(0x00bc);
         m.icu.deliver();
         assert_eq!(m.r16(periph::icu::IVECT), 0x00bc);

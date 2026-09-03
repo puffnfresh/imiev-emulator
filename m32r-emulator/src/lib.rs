@@ -599,12 +599,21 @@ impl Cpu {
         let a = f32::from_bits(self.r[frsrc]);
         let b = f32::from_bits(self.r[frsrc2]);
         match (fop3, fop4) {
-            (0, 0) => self.r[frdest] = (a + b).to_bits(),                 // FADD
-            (0, 0x4) => self.r[frdest] = (a - b).to_bits(),              // FSUB
-            (0, 0xC) => self.r[frdest] = (a - b).to_bits(),              // FCMP (diff)
-            (0, 0xD) => self.r[frdest] = (a < b) as u32,                 // FCMPE
-            (1, 0) => self.r[frdest] = (a * b).to_bits(),               // FMUL
-            (2, 0) => self.r[frdest] = (a / b).to_bits(),               // FDIV
+            (0, 0) => self.r[frdest] = (a + b).to_bits(),   // FADD
+            (0, 0x4) => self.r[frdest] = (a - b).to_bits(), // FSUB
+            (0, 0xC) | (0, 0xD) => {
+                self.r[frdest] = if a.is_nan() || b.is_nan() {
+                    0x7fc0_0000
+                } else if a < b {
+                    0x8000_0000
+                } else if a > b {
+                    1
+                } else {
+                    0
+                };
+            }
+            (1, 0) => self.r[frdest] = (a * b).to_bits(), // FMUL
+            (2, 0) => self.r[frdest] = (a / b).to_bits(), // FDIV
             (3, 0) => {
                 let d = f32::from_bits(self.r[frdest]);
                 self.r[frdest] = (d + a * b).to_bits(); // FMADD
@@ -613,10 +622,10 @@ impl Cpu {
                 let d = f32::from_bits(self.r[frdest]);
                 self.r[frdest] = (d - a * b).to_bits(); // FMSUB
             }
-            (4, 0) => self.r[frdest] = ((a as i32) as f32).to_bits(),   // ITOF
-            (4, 0x4) => self.r[frdest] = ((self.r[frsrc]) as f32).to_bits(), // UTOF
-            (4, 0x8) => self.r[frdest] = (a as i32) as u32,             // FTOI
-            (4, 0xC) => self.r[frdest] = (a as i32) as u32,             // FTOS
+            (4, 0) => self.r[frdest] = (self.r[frsrc] as i32 as f32).to_bits(), // ITOF
+            (4, 0x4) => self.r[frdest] = (self.r[frsrc] as f32).to_bits(),      // UTOF
+            (4, 0x8) => self.r[frdest] = a as i32 as u32,                       // FTOI
+            (4, 0xC) => self.r[frdest] = a as i32 as u32,                       // FTOS
             _ => {}
         }
     }
