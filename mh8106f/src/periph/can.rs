@@ -66,7 +66,25 @@ impl CanModule {
         (SLOT_BASE + slot * SLOT_STRIDE + field) as usize
     }
 
-    pub fn deliver_rx(&mut self, slot: u32, id: u16, data: &[u8]) -> u16 {
+    pub fn deliver_rx(&mut self, id: u16, data: &[u8]) -> Option<u16> {
+        let (sid0, sid1) = encode_sid(id);
+        let slot = (0..NUM_SLOTS).find(|&slot| {
+            let ctrl = self.regs[(SLOT_CTRL_BASE + slot) as usize];
+            let base = self.slot_field(slot, 0);
+            ctrl & RR != 0
+                && self.regs[base + SLOT_SID0 as usize] == sid0
+                && self.regs[base + SLOT_SID1 as usize] == sid1
+        })?;
+        self.write_rx_slot(slot, id, data);
+        Some(self.rx_ivect)
+    }
+
+    pub fn deliver_rx_into(&mut self, slot: u32, id: u16, data: &[u8]) -> u16 {
+        self.write_rx_slot(slot, id, data);
+        self.rx_ivect
+    }
+
+    fn write_rx_slot(&mut self, slot: u32, id: u16, data: &[u8]) {
         debug_assert!(slot < NUM_SLOTS, "slot out of range");
         let base = self.slot_field(slot, 0);
         let (sid0, sid1) = encode_sid(id);
@@ -83,11 +101,26 @@ impl CanModule {
         self.regs[(SLOT_CTRL_BASE + slot) as usize] = RR | TRFIN;
         let slist = be_read(&self.regs, SLIST as usize, 4) | (0x8000_0000u32 >> slot);
         be_write(&mut self.regs, SLIST as usize, 4, slist);
-        self.rx_ivect
     }
 
     pub fn take_tx(&mut self) -> Vec<CanFrame> {
         std::mem::take(&mut self.tx)
+    }
+
+    pub fn rx_slots(&self) -> Vec<(u32, u16, u8)> {
+        (0..NUM_SLOTS)
+            .filter_map(|slot| {
+                let ctrl = self.regs[(SLOT_CTRL_BASE + slot) as usize];
+                (ctrl & RR != 0).then(|| {
+                    let base = self.slot_field(slot, 0);
+                    let sid = decode_sid(
+                        self.regs[base + SLOT_SID0 as usize],
+                        self.regs[base + SLOT_SID1 as usize],
+                    );
+                    (slot, sid, ctrl)
+                })
+            })
+            .collect()
     }
 
     fn transmit(&mut self, slot: u32) {
@@ -143,10 +176,35 @@ mod tests {
     }
 
     #[test]
-    fn deliver_rx_populates_slot_and_status() {
+    fn deliver_rx_routes_to_the_armed_mailbox() {
+        // The firmware arms mailbox 15 to receive SID 0x412 (RR + acceptance ID).
+        let mut can = CanModule::new(0x0080_1000, 0x0000);
+        let base = 0x0080_1000;
+        let slot = 15;
+        let (s0, s1) = encode_sid(0x412);
+        can.write(slot_field(base, slot, SLOT_SID0), 1, s0 as u32);
+        can.write(slot_field(base, slot, SLOT_SID1), 1, s1 as u32);
+        can.write(slot_ctrl(base, slot), 1, RR as u32);
+
+        // A bus frame for a SID no mailbox wants is dropped.
+        assert_eq!(can.deliver_rx(0x321, &[1, 2, 3]), None);
+        // The 0x412 frame lands in mailbox 15 by acceptance matching — no slot given.
+        assert_eq!(can.deliver_rx(0x412, &[0xaa, 0xbb]), Some(0x0000));
+        let s0r = can.read(slot_field(base, slot, SLOT_SID0), 1) as u8;
+        let s1r = can.read(slot_field(base, slot, SLOT_SID1), 1) as u8;
+        assert_eq!(decode_sid(s0r, s1r), 0x412);
+        assert_eq!(can.read(slot_field(base, slot, SLOT_DATA0), 1), 0xaa);
+        assert_eq!(
+            can.read(base + SLIST, 4) & (0x8000_0000u32 >> slot),
+            0x8000_0000u32 >> slot
+        );
+    }
+
+    #[test]
+    fn deliver_rx_into_forces_a_slot() {
         let mut can = CanModule::new(CAN1_BASE, 0x0110);
         let slot = 30;
-        let iv = can.deliver_rx(slot, 0x611, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        let iv = can.deliver_rx_into(slot, 0x611, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
         assert_eq!(iv, 0x0110);
 
         let sid0 = can.read(slot_field(CAN1_BASE, slot, SLOT_SID0), 1) as u8;

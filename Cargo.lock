@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "imiev-bench"
 version = "0.1.0"
+dependencies = [
+ "mh8106f",
+]
 
 [[package]]
 name = "m32r-emulator"

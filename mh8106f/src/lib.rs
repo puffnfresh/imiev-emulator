@@ -221,13 +221,13 @@ impl System {
         &mut self.mem.adc
     }
 
-    pub fn inject_can1(&mut self, slot: u32, sid: u16, data: &[u8]) {
-        let iv = self.mem.can1.deliver_rx(slot, sid, data);
-        self.mem.icu.raise(iv);
+    pub fn inject_can0(&mut self, id: u16, data: &[u8]) -> bool {
+        self.mem.can0.deliver_rx(id, data).is_some()
     }
 
-    pub fn inject_can0(&mut self, slot: u32, sid: u16, data: &[u8]) {
-        self.mem.can0.deliver_rx(slot, sid, data);
+    pub fn inject_can1(&mut self, slot: u32, sid: u16, data: &[u8]) {
+        let iv = self.mem.can1.deliver_rx_into(slot, sid, data);
+        self.mem.icu.raise(iv);
     }
 
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
@@ -243,7 +243,7 @@ impl System {
     pub fn step(&mut self) -> bool {
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
-        if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() && self.cpu.pc >= 0x0004_0000 {
+        if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
             // The chained slow tick takes priority over the fast tick.
             if self.mem.take_slow_tick_request() {
                 self.mem.icu.present(SLOW_TICK_IVECT);
@@ -384,6 +384,26 @@ mod tests {
         assert!(d.iter().any(|&b| b != 0), "0x373 payload all zero: {d:02x?}");
         // Multiple ticks serviced (proves the ISR now returns via RTE, not hangs).
         assert!(sys.interrupts_taken > 1, "scheduler not running (taken={})", sys.interrupts_taken);
+    }
+
+    #[test]
+    fn bmu_arms_its_own_rx_mailboxes() {
+        let fw = include_bytes!("../../firmware/bmu.bin");
+        let mut sys = System::new(fw);
+        for (ch, v) in [(0usize, 0x300u16), (4, 0x300), (1, 0x330), (2, 0x200), (3, 0x200), (9, 0x800), (0xB, 0x800)] {
+            sys.mem.adc.set_channel(ch, v);
+        }
+        for _ in 0..16_000_000u64 {
+            sys.step();
+        }
+        let armed: Vec<u16> = sys.mem.can0.rx_slots().iter().map(|&(_, sid, _)| sid).collect();
+        // The firmware armed the vehicle-bus frames it consumes (key ON, inverter…).
+        for sid in [0x424u16, 0x412, 0x288, 0x286, 0x285, 0x01c] {
+            assert!(armed.contains(&sid), "firmware did not arm RX for 0x{sid:x}");
+        }
+        // A frame now routes itself with no slot hint.
+        assert!(sys.inject_can0(0x412, &[0x04, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!sys.inject_can0(0x321, &[0; 8]), "unarmed SID must be dropped");
     }
 
     /// Make sure the EV-ECU boots

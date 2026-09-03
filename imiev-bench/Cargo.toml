@@ -7,3 +7,4 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
+mh8106f = { path = "../mh8106f" }
