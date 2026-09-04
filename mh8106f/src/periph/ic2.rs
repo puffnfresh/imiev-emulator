@@ -17,18 +17,30 @@ pub const DMA5_COMPLETE: u8 = 0x01; // DM59ITST bit0
 const DMA_ARM_CMD: u32 = 0x6d;
 const RX_ERROR: u8 = 0x80; // S2RCNT bit7
 
+const TX_LATENCY: u32 = 256;
+
 #[derive(Default)]
 pub struct Ic2 {
     si23st: u8,
     dm59itst: u8,
     s2rcnt: u8,
-    tx_event: bool, // firmware clocked a byte out of S2TXB since last poll
+    tx_event: bool, // a byte has finished clocking out of S2TXB (TX-complete)
+    tx_latency: u32, // cycles remaining before the in-flight TX byte completes
     rx_armed: bool, // firmware armed DMA5 to receive the next answer
 }
 
 impl Ic2 {
     pub fn new() -> Ic2 {
         Ic2::default()
+    }
+
+    pub fn tick(&mut self, cycles: u64) {
+        if self.tx_latency > 0 {
+            self.tx_latency = self.tx_latency.saturating_sub(cycles as u32);
+            if self.tx_latency == 0 {
+                self.tx_event = true;
+            }
+        }
     }
 
     pub fn take_tx_event(&mut self) -> bool {
@@ -50,6 +62,10 @@ impl Ic2 {
     pub fn set_dma5_complete(&mut self) {
         self.dm59itst |= DMA5_COMPLETE;
     }
+
+    pub fn rx_pending(&self) -> bool {
+        self.dm59itst & DMA5_COMPLETE != 0
+    }
 }
 
 impl Peripheral for Ic2 {
@@ -68,15 +84,12 @@ impl Peripheral for Ic2 {
 
     fn write(&mut self, a: u32, _size: u32, v: u32) {
         match a {
+            // Status registers: write-0-to-clear (a 0 bit clears, a 1 bit is unchanged).
             SI23ST => self.si23st &= v as u8,
             DM59ITST => self.dm59itst &= v as u8,
             S2RCNT => self.s2rcnt = (v as u8) & !RX_ERROR, // never leave RX-error latched
-            S2TXB | S2TXB_LO => self.tx_event = true, // a question byte was clocked out
-            DM5CNT0 => {
-                if v == DMA_ARM_CMD {
-                    self.rx_armed = true;
-                }
-            }
+            S2TXB | S2TXB_LO => self.tx_latency = TX_LATENCY, // begin clocking a byte out
+            DM5CNT0 if v == DMA_ARM_CMD => self.rx_armed = true,
             _ => {}
         }
     }
@@ -100,10 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn s2txb_write_flags_a_tx_event() {
+    fn s2txb_write_flags_a_tx_event_after_latency() {
         let mut ic2 = Ic2::new();
         assert!(!ic2.take_tx_event());
         ic2.write(S2TXB_LO, 1, 0x35);
+        // TX is not instantaneous: no completion until the byte has clocked out.
+        assert!(!ic2.take_tx_event(), "TX completes only after its latency elapses");
+        ic2.tick(TX_LATENCY as u64);
         assert!(ic2.take_tx_event());
         assert!(!ic2.take_tx_event(), "event is one-shot");
     }

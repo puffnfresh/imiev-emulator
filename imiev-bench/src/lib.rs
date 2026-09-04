@@ -82,6 +82,7 @@ pub struct Node {
     pub name: &'static str,
     sys: System,
     parts: Vec<Box<dyn Part>>,
+    local_parts: Vec<Box<dyn Part>>,
 }
 
 impl Node {
@@ -90,6 +91,7 @@ impl Node {
             name,
             sys: System::new(firmware),
             parts: Vec::new(),
+            local_parts: Vec::new(),
         }
     }
 
@@ -102,6 +104,11 @@ impl Node {
 
     pub fn with_part(mut self, part: Box<dyn Part>) -> Self {
         self.parts.push(part);
+        self
+    }
+
+    pub fn with_local_part(mut self, part: Box<dyn Part>) -> Self {
+        self.local_parts.push(part);
         self
     }
 
@@ -131,6 +138,13 @@ impl Node {
     fn update_parts(&mut self, bus: &CanBus) {
         let Node { sys, parts, .. } = self;
         for p in parts.iter_mut() {
+            p.update(sys, bus);
+        }
+    }
+
+    fn update_local_parts(&mut self, bus: &CanBus) {
+        let Node { sys, local_parts, .. } = self;
+        for p in local_parts.iter_mut() {
             p.update(sys, bus);
         }
     }
@@ -182,8 +196,8 @@ impl Simulation {
         let ecu = Node::new("EV-ECU", ECU_FW)
             .with_adc_env(ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
-            .with_part(Box::new(Ic2Companion::default()));
-        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL).with_source(Box::new(Vehicle::default()))
+            .with_local_part(Box::new(Ic2Companion::default()));
+        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL).with_source(Box::new(Vehicle))
     }
 
     pub fn with_source(mut self, source: Box<dyn BusSource>) -> Self {
@@ -203,11 +217,15 @@ impl Simulation {
 
     pub fn run(&mut self, steps: u64) {
         for _ in 0..steps {
-            for n in &mut self.nodes {
-                n.step();
+            {
+                let Simulation { nodes, bus, .. } = self;
+                for n in nodes.iter_mut() {
+                    n.step();
+                    n.update_local_parts(bus);
+                }
             }
             self.cycle += 1;
-            if self.cycle % self.pump_every == 0 {
+            if self.cycle.is_multiple_of(self.pump_every) {
                 self.pump();
             }
         }
@@ -370,16 +388,30 @@ impl Part for Condenser {
 const IC2_Q_MARKER: u32 = 0x0080_8249; // & 0xf0 = slot family (0x10 / 0x30)
 const IC2_Q_ID: u32 = 0x0080_824a; // message id being asked
 const IC2_Q_DATA: u32 = 0x0080_824b; // the data byte the question carries
+const IC2_TX_SLOTS: u32 = 0x0080_81ac; // 30 entries × 4: [id, marker|state, byte2, byte3]
 const IC2_STARTUP_STATE: u32 = 0x0080_825a; // 0->4->0xFFFF(POST done)
+const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question frame is fully sent
 
 #[derive(Default)]
-pub struct Ic2Companion;
+pub struct Ic2Companion {
+    armed_watch: bool,
+    question_sent: bool,
+}
 
 impl Ic2Companion {
     fn reply(chip: &System) -> [u8; 5] {
         let marker = chip.peek(IC2_Q_MARKER, 1) as u8 & 0xf0;
         let id = chip.peek(IC2_Q_ID, 1) as u8;
-        let slot_data = chip.peek(IC2_Q_DATA, 1) as u8;
+
+        let mut slot_data = chip.peek(IC2_Q_DATA, 1) as u8;
+        for s in 0..30u32 {
+            let base = IC2_TX_SLOTS + s * 4;
+            let state = chip.peek(base + 1, 1) as u8 & 0x0f;
+            if chip.peek(base, 1) as u8 == id && (state == 3 || state == 4) {
+                slot_data = chip.peek(base + 2, 1) as u8;
+                break;
+            }
+        }
 
         let post_post = chip.peek(IC2_STARTUP_STATE, 1) as u8 == 0xff;
         let payload = if post_post && id == 0x01 {
@@ -404,7 +436,15 @@ impl Ic2Companion {
 
 impl Part for Ic2Companion {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        if chip.ic2_take_rx_armed() {
+        if !self.armed_watch {
+            chip.watch_pc(IC2_TX_DONE_PC);
+            self.armed_watch = true;
+        }
+        if chip.take_pc_hit() {
+            self.question_sent = true;
+        }
+        if self.question_sent && !chip.ic2_rx_pending() && chip.ic2_take_rx_armed() {
+            self.question_sent = false;
             let frame = Self::reply(chip);
             chip.ic2_answer(&frame);
         }
@@ -423,20 +463,33 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn probe_ic2_post() {
-        // The stock car with IC2 wired: watch the ECU's startup_state as the handshake runs.
+    fn imiev_ecu_completes_post() {
         let mut sim = Simulation::imiev();
-        for k in 0..16 {
-            sim.run(1_000_000);
-            let ecu = sim.node(1).system(); // node 1 = EV-ECU
-            let ss = ecu.peek(0x0080_825a, 2);
-            println!("+{}M ss=0x{ss:04x} ack_a=0x{:04x} ack_b=0x{:04x}", k + 1, ecu.peek(0x0080_826c, 2), ecu.peek(0x0080_826e, 2));
-            if ss == 0xffff {
-                println!("POST COMPLETE");
+        sim.run(16_000_000);
+        let ss = sim.node(1).system().peek(IC2_STARTUP_STATE, 2);
+        assert_eq!(ss, 0xffff, "ECU did not complete POST in the stock co-sim");
+    }
+
+    #[test]
+    fn ic2_handshake_completes_post() {
+        let mut ecu = System::new(ECU_FW);
+        for &(ch, raw) in ECU_BOOT_ADC {
+            ecu.adc_mut().set_channel(ch, raw);
+        }
+        let mut ic2 = Ic2Companion::default();
+        let bus = CanBus::default();
+        for _ in 0..8_000_000u64 {
+            ecu.step();
+            ic2.update(&mut ecu, &bus);
+            if ecu.peek(IC2_STARTUP_STATE, 2) == 0xffff {
                 break;
             }
         }
+        assert_eq!(
+            ecu.peek(IC2_STARTUP_STATE, 2),
+            0xffff,
+            "IC2 handshake did not complete POST (startup_state != 0xFFFF)"
+        );
     }
 
     #[test]

@@ -76,6 +76,7 @@ impl Machine {
     /// Advance on-chip time by `cycles` and route any timer request into the ICU.
     pub fn tick(&mut self, cycles: u64) {
         self.adc.tick(cycles);
+        self.ic2.tick(cycles);
         if let Some(iv) = self.timer.advance(cycles) {
             self.icu.raise(iv);
         }
@@ -214,6 +215,8 @@ pub struct System {
     cpu: Cpu,
     mem: Machine,
     interrupts_taken: u64,
+    pc_watch: Option<u32>,
+    pc_hit: bool,
 }
 
 impl System {
@@ -222,7 +225,17 @@ impl System {
             cpu: Cpu::new(),
             mem: Machine::new(firmware),
             interrupts_taken: 0,
+            pc_watch: None,
+            pc_hit: false,
         }
+    }
+
+    pub fn watch_pc(&mut self, addr: u32) {
+        self.pc_watch = Some(addr);
+    }
+
+    pub fn take_pc_hit(&mut self) -> bool {
+        core::mem::take(&mut self.pc_hit)
     }
 
     pub fn cpu(&self) -> &Cpu {
@@ -277,6 +290,11 @@ impl System {
         self.mem.ic2_deliver_rx(bytes);
     }
 
+    pub fn ic2_rx_pending(&self) -> bool {
+        self.mem.ic2.rx_pending()
+    }
+
+
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
         self.mem.can0.take_tx()
     }
@@ -288,6 +306,9 @@ impl System {
     /// Advance one CPU step, delivering a pending interrupt first if the core can
     /// take one. Returns the CPU's `step` result (false only on decode failure).
     pub fn step(&mut self) -> bool {
+        if self.pc_watch == Some(self.cpu.pc) {
+            self.pc_hit = true;
+        }
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
         if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
