@@ -181,7 +181,8 @@ impl Simulation {
             .with_part(Box::new(Cmu::default()));
         let ecu = Node::new("EV-ECU", ECU_FW)
             .with_adc_env(ECU_BOOT_ADC)
-            .with_part(Box::new(Condenser::default()));
+            .with_part(Box::new(Condenser::default()))
+            .with_part(Box::new(Ic2Companion::default()));
         Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL).with_source(Box::new(Vehicle::default()))
     }
 
@@ -366,6 +367,50 @@ impl Part for Condenser {
     }
 }
 
+const IC2_Q_MARKER: u32 = 0x0080_8249; // & 0xf0 = slot family (0x10 / 0x30)
+const IC2_Q_ID: u32 = 0x0080_824a; // message id being asked
+const IC2_Q_DATA: u32 = 0x0080_824b; // the data byte the question carries
+const IC2_STARTUP_STATE: u32 = 0x0080_825a; // 0->4->0xFFFF(POST done)
+
+#[derive(Default)]
+pub struct Ic2Companion;
+
+impl Ic2Companion {
+    fn reply(chip: &System) -> [u8; 5] {
+        let marker = chip.peek(IC2_Q_MARKER, 1) as u8 & 0xf0;
+        let id = chip.peek(IC2_Q_ID, 1) as u8;
+        let slot_data = chip.peek(IC2_Q_DATA, 1) as u8;
+
+        let post_post = chip.peek(IC2_STARTUP_STATE, 1) as u8 == 0xff;
+        let payload = if post_post && id == 0x01 {
+            [0x00, 0x01, 0x21, 0x00] // id-1 status word (== flash constant)
+        } else if id == 0x1f {
+            [0x11, 0x00, 0x00, 0x00] // status ack (sets the group ack bits)
+        } else if marker == 0x30 {
+            [0x25, id, slot_data, 0xAA] // per-id ack for a 0x30-family slot
+        } else {
+            [0x35, id, slot_data, 0xAA] // per-id ack for a 0x10-family slot
+        };
+
+        let mut sum = 0u32;
+        for &b in &payload {
+            sum += b as u32;
+            sum = (sum & 0xff) + (sum >> 8);
+        }
+        let chk = !sum as u8;
+        [payload[0], payload[1], payload[2], payload[3], chk]
+    }
+}
+
+impl Part for Ic2Companion {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        if chip.ic2_take_rx_armed() {
+            let frame = Self::reply(chip);
+            chip.ic2_answer(&frame);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +420,23 @@ mod tests {
         let f = frame(0x374, &[9; 12]);
         assert_eq!(f.dlc, 8);
         assert_eq!(f.data, [9; 8]);
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_ic2_post() {
+        // The stock car with IC2 wired: watch the ECU's startup_state as the handshake runs.
+        let mut sim = Simulation::imiev();
+        for k in 0..16 {
+            sim.run(1_000_000);
+            let ecu = sim.node(1).system(); // node 1 = EV-ECU
+            let ss = ecu.peek(0x0080_825a, 2);
+            println!("+{}M ss=0x{ss:04x} ack_a=0x{:04x} ack_b=0x{:04x}", k + 1, ecu.peek(0x0080_826c, 2), ecu.peek(0x0080_826e, 2));
+            if ss == 0xffff {
+                println!("POST COMPLETE");
+                break;
+            }
+        }
     }
 
     #[test]

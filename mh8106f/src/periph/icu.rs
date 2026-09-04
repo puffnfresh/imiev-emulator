@@ -42,6 +42,8 @@ impl Icu {
         match ivect {
             0x00bc => Some(0x0080_0074), // MJT Output Interrupt 2 (TOP0 fast tick)
             0x00b0 => Some(0x0080_0077), // MJT Output Interrupt 5 (chained slow tick)
+            0x00ec => Some(0x0080_0068), // SIO2,3 Transmit/Receive (ISIO23CR)
+            0x00e8 => Some(0x0080_0069), // DMA5-9 (IDMA59CR)
             _ => None,
         }
     }

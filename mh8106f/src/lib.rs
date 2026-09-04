@@ -15,8 +15,12 @@
 use m32r_emulator::{Bus, Cpu};
 
 pub mod periph;
-pub use periph::{Adc, CanFrame, CanModule, Gpio, Icu, Timer};
+pub use periph::{Adc, CanFrame, CanModule, Gpio, Ic2, Icu, Timer};
 use periph::Peripheral;
+
+const SIO23_IVECT: u16 = 0x00ec;
+const DMA59_IVECT: u16 = 0x00e8;
+const IC2_RX_BUFFER: u32 = 0x0080_824e;
 
 const CAN0_BASE: u32 = 0x0080_1000;
 const CAN1_BASE: u32 = 0x0080_1400;
@@ -42,6 +46,7 @@ pub(crate) struct Machine {
     pub icu: Icu,
     pub adc: Adc,
     pub gpio: Gpio,
+    pub ic2: Ic2,
     pub can0: CanModule,
     pub can1: CanModule,
     pub last_unclaimed_sfr_read: u32,
@@ -60,6 +65,7 @@ impl Machine {
             icu: Icu::new(),
             adc: Adc::new(),
             gpio: Gpio::new(),
+            ic2: Ic2::new(),
             // CAN0 RX isn't modeled yet, so its RX IVECT is a placeholder.
             can0: CanModule::new(CAN0_BASE, 0),
             can1: CanModule::new(CAN1_BASE, CAN1_RX_IVECT),
@@ -93,6 +99,23 @@ impl Machine {
         self.timer.raise_topis(0);
     }
 
+    fn ic2_service_tx(&mut self) {
+        if self.ic2.take_tx_event() {
+            self.ic2.set_tx_complete();
+            self.icu.raise(SIO23_IVECT);
+        }
+    }
+
+    fn ic2_deliver_rx(&mut self, bytes: &[u8]) {
+        for (i, &b) in bytes.iter().enumerate() {
+            if let Some(off) = self.ram_off(IC2_RX_BUFFER + i as u32) {
+                self.ram[off] = b;
+            }
+        }
+        self.ic2.set_dma5_complete();
+        self.icu.raise(DMA59_IVECT);
+    }
+
     fn peek(&self, a: u32, size: u32) -> u32 {
         if let Some(off) = self.ram_off(a) {
             return be_read(&self.ram, off, size);
@@ -103,12 +126,13 @@ impl Machine {
         0
     }
 
-    fn devices(&mut self) -> [&mut dyn Peripheral; 6] {
+    fn devices(&mut self) -> [&mut dyn Peripheral; 7] {
         [
             &mut self.timer,
             &mut self.icu,
             &mut self.adc,
             &mut self.gpio,
+            &mut self.ic2,
             &mut self.can0,
             &mut self.can1,
         ]
@@ -245,6 +269,14 @@ impl System {
         self.mem.icu.raise(iv);
     }
 
+    pub fn ic2_take_rx_armed(&mut self) -> bool {
+        self.mem.ic2.take_rx_armed()
+    }
+
+    pub fn ic2_answer(&mut self, bytes: &[u8]) {
+        self.mem.ic2_deliver_rx(bytes);
+    }
+
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
         self.mem.can0.take_tx()
     }
@@ -259,6 +291,7 @@ impl System {
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
         if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
+            self.mem.ic2_service_tx();
             // The chained slow tick takes priority over the fast tick.
             if self.mem.take_slow_tick_request() {
                 self.mem.icu.present(SLOW_TICK_IVECT);
@@ -267,9 +300,10 @@ impl System {
                 self.mem.tick(1);
                 return true;
             }
-            if self.mem.icu.pending().is_some() {
-                self.mem.icu.deliver();
-                self.mem.raise_fast_tick_subsource();
+            if let Some(iv) = self.mem.icu.deliver() {
+                if iv == periph::timer::TICK_IVECT {
+                    self.mem.raise_fast_tick_subsource();
+                }
                 self.cpu.take_interrupt(periph::icu::EI_VECTOR);
                 self.interrupts_taken += 1;
                 self.mem.tick(1);

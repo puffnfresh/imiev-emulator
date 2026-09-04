@@ -5,12 +5,14 @@
 pub mod adc;
 pub mod can;
 pub mod gpio;
+pub mod ic2;
 pub mod icu;
 pub mod timer;
 
 pub use adc::Adc;
 pub use can::{CanFrame, CanModule};
 pub use gpio::Gpio;
+pub use ic2::Ic2;
 pub use icu::Icu;
 pub use timer::Timer;
 
