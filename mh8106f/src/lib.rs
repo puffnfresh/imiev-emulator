@@ -15,7 +15,7 @@
 use m32r_emulator::{Bus, Cpu};
 
 pub mod periph;
-pub use periph::{Adc, CanFrame, CanModule, Icu, Timer};
+pub use periph::{Adc, CanFrame, CanModule, Gpio, Icu, Timer};
 use periph::Peripheral;
 
 const CAN0_BASE: u32 = 0x0080_1000;
@@ -41,6 +41,7 @@ pub(crate) struct Machine {
     pub timer: Timer,
     pub icu: Icu,
     pub adc: Adc,
+    pub gpio: Gpio,
     pub can0: CanModule,
     pub can1: CanModule,
     pub last_unclaimed_sfr_read: u32,
@@ -58,6 +59,7 @@ impl Machine {
             timer: Timer::new(),
             icu: Icu::new(),
             adc: Adc::new(),
+            gpio: Gpio::new(),
             // CAN0 RX isn't modeled yet, so its RX IVECT is a placeholder.
             can0: CanModule::new(CAN0_BASE, 0),
             can1: CanModule::new(CAN1_BASE, CAN1_RX_IVECT),
@@ -101,11 +103,12 @@ impl Machine {
         0
     }
 
-    fn devices(&mut self) -> [&mut dyn Peripheral; 5] {
+    fn devices(&mut self) -> [&mut dyn Peripheral; 6] {
         [
             &mut self.timer,
             &mut self.icu,
             &mut self.adc,
+            &mut self.gpio,
             &mut self.can0,
             &mut self.can1,
         ]
@@ -219,6 +222,18 @@ impl System {
 
     pub fn adc_mut(&mut self) -> &mut Adc {
         &mut self.mem.adc
+    }
+
+    pub fn set_gpio_input(&mut self, addr: u32, mask: u8, value: u8) {
+        self.mem.gpio.set_input(addr, mask, value);
+    }
+
+    pub fn gpio_output(&self, addr: u32) -> u8 {
+        self.mem.gpio.output(addr)
+    }
+
+    pub fn gpio_level(&self, addr: u32) -> u8 {
+        self.mem.gpio.pin_level(addr)
     }
 
     pub fn inject_can0(&mut self, id: u16, data: &[u8]) -> bool {

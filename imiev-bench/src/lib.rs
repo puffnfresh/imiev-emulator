@@ -69,10 +69,19 @@ pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     CanFrame { id, dlc: n as u8, data: buf }
 }
 
-/// One chip on the vehicle CAN bus.
+pub trait Part {
+    fn update(&mut self, chip: &mut System, bus: &CanBus);
+}
+
+pub trait BusSource {
+    fn frames(&mut self, bus: &CanBus) -> Vec<CanFrame>;
+}
+
+/// One chip on the vehicle CAN bus, together with the parts wired to it.
 pub struct Node {
     pub name: &'static str,
     sys: System,
+    parts: Vec<Box<dyn Part>>,
 }
 
 impl Node {
@@ -80,7 +89,20 @@ impl Node {
         Node {
             name,
             sys: System::new(firmware),
+            parts: Vec::new(),
         }
+    }
+
+    pub fn with_adc_env(mut self, env: &[(usize, u16)]) -> Self {
+        for &(ch, raw) in env {
+            self.set_adc(ch, raw);
+        }
+        self
+    }
+
+    pub fn with_part(mut self, part: Box<dyn Part>) -> Self {
+        self.parts.push(part);
+        self
     }
 
     pub fn system(&self) -> &System {
@@ -105,6 +127,13 @@ impl Node {
     fn deliver(&mut self, f: &CanFrame) {
         self.sys.inject_can0(f.id, &f.data[..f.dlc as usize]);
     }
+
+    fn update_parts(&mut self, bus: &CanBus) {
+        let Node { sys, parts, .. } = self;
+        for p in parts.iter_mut() {
+            p.update(sys, bus);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -125,17 +154,11 @@ impl CanBus {
     }
 }
 
-pub trait Component {
-    fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
-        Vec::new()
-    }
-    fn drive(&mut self, _nodes: &mut [Node], _bus: &CanBus) {}
-}
-
-/// Simulation of several [`Node`]s on one [`CanBus`], with [`Component`]s.
+/// Several [`Node`]s on one [`CanBus`], plus the [`BusSource`]s that stand in for
+/// the un-emulated rest of the car.
 pub struct Simulation {
     nodes: Vec<Node>,
-    components: Vec<Box<dyn Component>>,
+    sources: Vec<Box<dyn BusSource>>,
     bus: CanBus,
     pump_every: u64,
     cycle: u64,
@@ -145,7 +168,7 @@ impl Simulation {
     pub fn new(nodes: Vec<Node>, pump_every: u64) -> Simulation {
         Simulation {
             nodes,
-            components: Vec::new(),
+            sources: Vec::new(),
             bus: CanBus::default(),
             pump_every: pump_every.max(1),
             cycle: 0,
@@ -153,23 +176,15 @@ impl Simulation {
     }
 
     pub fn imiev() -> Simulation {
-        let mut bmu = Node::new("BMU", BMU_FW);
-        for &(ch, raw) in BMU_BOOT_ADC {
-            bmu.set_adc(ch, raw);
-        }
-
-        let mut ecu = Node::new("EV-ECU", ECU_FW);
-        for &(ch, raw) in ECU_BOOT_ADC {
-            ecu.set_adc(ch, raw);
-        }
-
-        let mut sim = Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL);
-        sim.components.push(Box::new(Vehicle::default()));
-        sim
+        let bmu = Node::new("BMU", BMU_FW)
+            .with_adc_env(BMU_BOOT_ADC)
+            .with_part(Box::new(Cmu::default()));
+        let ecu = Node::new("EV-ECU", ECU_FW).with_adc_env(ECU_BOOT_ADC);
+        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL).with_source(Box::new(Vehicle::default()))
     }
 
-    pub fn with_component(mut self, component: Box<dyn Component>) -> Self {
-        self.components.push(component);
+    pub fn with_source(mut self, source: Box<dyn BusSource>) -> Self {
+        self.sources.push(source);
         self
     }
 
@@ -196,13 +211,13 @@ impl Simulation {
     }
 
     fn pump(&mut self) {
-        let Simulation { nodes, components, bus, .. } = self;
+        let Simulation { nodes, sources, bus, .. } = self;
         let mut tx: Vec<CanFrame> = Vec::new();
         for n in nodes.iter_mut() {
             tx.append(&mut n.drain_tx());
         }
-        for c in components.iter_mut() {
-            tx.extend(c.frames(bus));
+        for s in sources.iter_mut() {
+            tx.extend(s.frames(bus));
         }
         for f in &tx {
             bus.record(*f);
@@ -210,8 +225,8 @@ impl Simulation {
                 n.deliver(f);
             }
         }
-        for c in components.iter_mut() {
-            c.drive(nodes, bus);
+        for n in nodes.iter_mut() {
+            n.update_parts(bus);
         }
     }
 }
@@ -222,9 +237,78 @@ const ETACS_IGNITION_ON: u8 = 0x04;
 #[derive(Default)]
 pub struct Vehicle;
 
-impl Component for Vehicle {
+impl BusSource for Vehicle {
     fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
         vec![frame(ETACS_STATUS_ID, &[ETACS_IGNITION_ON, 0, 0, 0, 0, 0, 0, 0])]
+    }
+}
+
+const CMU_BOARDS: u16 = 12; // twelve CMU boards in the i-MiEV pack
+const CMU_CELLS: [u16; 4] = [1, 3, 5, 7]; // odd cell index carried per report frame
+const CMU_RX_SLOT: u32 = 30; // BMU pack-bus mailbox the CMU poll reprograms
+const CELL_V_OFFSET_MV: i32 = 2100; // report raw = (cell mV − 2100) / 5  ⇔ (V−2.1)×200
+const CELL_V_STEP_MV: i32 = 5;
+const TEMP_C_BIAS: i16 = 50; // report byte = °C + 50
+
+pub struct Cmu {
+    pub cell_mv: u16,
+    pub temp_c: i8,
+    next: usize,
+}
+
+impl Cmu {
+    /// A pack of uniform cells.
+    pub fn new(cell_mv: u16, temp_c: i8) -> Cmu {
+        Cmu { cell_mv, temp_c, next: 0 }
+    }
+
+    fn report(&self) -> (u16, [u8; 8]) {
+        let idx = self.next % (CMU_BOARDS as usize * CMU_CELLS.len());
+        let board = (idx / CMU_CELLS.len()) as u16 + 1;
+        let cell = CMU_CELLS[idx % CMU_CELLS.len()];
+        let sid = 0x600 | (board << 4) | cell;
+
+        let raw = ((self.cell_mv as i32 - CELL_V_OFFSET_MV) / CELL_V_STEP_MV).clamp(0, 0xffff) as u16;
+        let [vh, vl] = raw.to_be_bytes();
+        let temp = (self.temp_c as i16 + TEMP_C_BIAS) as u8;
+        (sid, [0, 0, temp, 0, vh, vl, vh, vl])
+    }
+}
+
+impl Default for Cmu {
+    /// A healthy pack.
+    fn default() -> Self {
+        Cmu::new(3700, 25)
+    }
+}
+
+impl Part for Cmu {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        let (sid, data) = self.report();
+        chip.inject_can1(CMU_RX_SLOT, sid, &data);
+        self.next += 1;
+    }
+}
+
+const CNTP_FB_PORT: u32 = 0x0080_0703; // P3DATA
+const PRECHARGE_FB_PORT: u32 = 0x0080_0709; // P9DATA
+const CONTACTOR_FB_BIT: u8 = 0x02; // bit1 on each port
+
+pub struct Contactor {
+    pub closed: bool,
+}
+
+impl Default for Contactor {
+    fn default() -> Self {
+        Contactor { closed: true }
+    }
+}
+
+impl Part for Contactor {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        let level = if self.closed { CONTACTOR_FB_BIT } else { 0 };
+        chip.set_gpio_input(CNTP_FB_PORT, CONTACTOR_FB_BIT, level);
+        chip.set_gpio_input(PRECHARGE_FB_PORT, CONTACTOR_FB_BIT, level);
     }
 }
 
@@ -248,5 +332,24 @@ mod tests {
             .last(0x373)
             .expect("BMU never broadcast 0x373 onto the bus");
         assert!(f.data.iter().any(|&b| b != 0), "0x373 payload all zero");
+    }
+
+    #[test]
+    fn imiev_bmu_records_cmu_cell_voltage() {
+        const CELL_V: u32 = 0x0080_7f37; // board array entry 0, cell voltage (BE, raw)
+        let mut sim = Simulation::imiev();
+        sim.run(16_000_000);
+        let recorded = sim.node(0).system().peek(CELL_V, 2);
+        assert_eq!(recorded, 0x0140, "BMU did not record the 3.7 V cells the CMUs reported");
+    }
+
+    #[test]
+    fn contactor_presents_closed_feedback_to_the_ecu() {
+        let ecu = Node::new("EV-ECU", ECU_FW).with_part(Box::new(Contactor::default()));
+        let mut sim = Simulation::new(vec![ecu], 1_000);
+        sim.run(2_000); // a couple of bus pumps
+        let ecu = sim.node(0).system();
+        assert_eq!(ecu.gpio_level(CNTP_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
+        assert_eq!(ecu.gpio_level(PRECHARGE_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
     }
 }
