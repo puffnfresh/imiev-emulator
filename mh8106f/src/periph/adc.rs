@@ -40,6 +40,10 @@ impl Adc {
             *slot = value & RESULT_MASK;
         }
     }
+
+    pub fn channel(&self, ch: usize) -> u16 {
+        self.results.get(ch).copied().unwrap_or(0)
+    }
 }
 
 impl Peripheral for Adc {
