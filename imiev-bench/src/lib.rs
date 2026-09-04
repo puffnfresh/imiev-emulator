@@ -455,6 +455,9 @@ impl Part for Ic2Companion {
 mod tests {
     use super::*;
 
+    const ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
+    const OP_MODE_PRECHARGE: u32 = 2;
+
     #[test]
     fn frame_truncates_to_can_limit() {
         let f = frame(0x374, &[9; 12]);
@@ -468,6 +471,20 @@ mod tests {
         sim.run(16_000_000);
         let ss = sim.node(1).system().peek(IC2_STARTUP_STATE, 2);
         assert_eq!(ss, 0xffff, "ECU did not complete POST in the stock co-sim");
+    }
+
+    #[test]
+    fn imiev_ecu_reaches_precharge() {
+        let mut sim = Simulation::imiev();
+        let mut reached_precharge = false;
+        for _ in 0..160 {
+            sim.run(100_000);
+            if sim.node(1).system().peek(ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
+                reached_precharge = true;
+                break;
+            }
+        }
+        assert!(reached_precharge, "ECU never reached PRECHARGE (mode machine stalled in REST)");
     }
 
     #[test]

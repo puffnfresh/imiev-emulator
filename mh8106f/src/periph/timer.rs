@@ -16,9 +16,8 @@
 //!   ... TOPCEN = (TOPCEN & 0xfffe) | 1 ; enable bit0
 //! ```
 //!
-//! Prescaler: `PRS0`/`PRS1` (8-bit) with select bit `TOPPRO` bit0. The counter
-//! decrements once every `(PRS + 1)` CPU cycles, so the tick period in cycles is
-//! `TOP0RL * (PRS + 1)`.
+//! Prescaler: `PRS0`/`PRS1` (8-bit). The counter decrements once every `(PRS + 1)`
+//! CPU cycles, so the tick period in cycles is `TOP0RL * (PRS + 1)`.
 
 use super::Peripheral;
 
@@ -29,8 +28,9 @@ pub const TOP0CT: u32 = 0x0080_0240; // live down-counter (read gives current co
 pub const TOP0RL: u32 = 0x0080_0242; // reload value
 pub const PRS0: u32 = 0x0080_0202; // prescaler 0
 pub const PRS1: u32 = 0x0080_0203; // prescaler 1
-pub const TOPPRO: u32 = 0x0080_02fc; // prescaler select (bit0: 0=PRS0, 1=PRS1)
-pub const TOPCEN: u32 = 0x0080_02fe; // count enable (bit0)
+pub const TOPPRO: u32 = 0x0080_02fc; // per-channel enable-protect (bit N protects TOPCEN bit N)
+pub const TOPCEN: u32 = 0x0080_02fe; // per-channel count enable (bit N = TOP channel N)
+const TOP0_EN: u16 = 1 << 0; // TOP0CEN — the scheduler tick channel
 
 /// A group of MJT counter registers of one sub-unit: channel `ch`'s counter is at
 /// `base + ch*stride` (a single-instance counter is `channels: 1`, with `stride`
@@ -72,15 +72,13 @@ fn is_freerun_counter(a: u32) -> bool {
 
 pub const TICK_IVECT: u16 = 0x00bc;
 
-const BIT0: u32 = 1 << 0;
-
 pub struct Timer {
     count: u16,  // TOP0CT: current down-count
     reload: u16, // TOP0RL
     prs0: u8,
     prs1: u8,
-    prescale_sel: bool, // TOPPRO bit0
-    enabled: bool,      // TOPCEN bit0
+    topcen: u16, // per-channel count enable (bit N)
+    toppro: u16, // per-channel enable-protect (bit N locks TOPCEN bit N)
     prescale_accum: u32,
     /// Elapsed CPU cycles.
     cycles: u64,
@@ -101,8 +99,8 @@ impl Timer {
             reload: 0,
             prs0: 0,
             prs1: 0,
-            prescale_sel: false,
-            enabled: false,
+            topcen: 0,
+            toppro: 0,
             prescale_accum: 0,
             cycles: 0,
             topis: 0,
@@ -110,7 +108,7 @@ impl Timer {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.topcen & TOP0_EN != 0
     }
 
     pub fn raise_topis(&mut self, ch: u8) {
@@ -118,13 +116,13 @@ impl Timer {
     }
 
     fn prescale_div(&self) -> u32 {
-        let prs = if self.prescale_sel { self.prs1 } else { self.prs0 };
-        prs as u32 + 1
+        // PRS0 clocks TOP0; the BMU leaves it 0 (÷1 = TOP0RL cycles/tick).
+        self.prs0 as u32 + 1
     }
 
     pub fn advance(&mut self, cycles: u64) -> Option<u16> {
         self.cycles = self.cycles.wrapping_add(cycles);
-        if !self.enabled {
+        if !self.is_enabled() {
             return None;
         }
         let div = self.prescale_div();
@@ -155,8 +153,8 @@ impl Peripheral for Timer {
             TOP0RL => self.reload as u32,
             PRS0 => self.prs0 as u32,
             PRS1 => self.prs1 as u32,
-            TOPPRO => self.prescale_sel as u32,
-            TOPCEN => self.enabled as u32,
+            TOPPRO => self.toppro as u32,
+            TOPCEN => self.topcen as u32,
             _ if is_freerun_counter(a) => {
                 // Monotonic free-running count, masked to the access width.
                 self.cycles as u32 & super::width_mask(size)
@@ -172,13 +170,13 @@ impl Peripheral for Timer {
             TOP0RL => self.reload = v as u16,
             PRS0 => self.prs0 = v as u8,
             PRS1 => self.prs1 = v as u8,
-            TOPPRO => self.prescale_sel = (v & BIT0) != 0,
+            TOPPRO => self.toppro = v as u16,
             TOPCEN => {
-                let en = (v & BIT0) != 0;
-                if en && !self.enabled {
-                    self.prescale_accum = 0; // fresh arm
+                let was_on = self.is_enabled();
+                self.topcen = (self.topcen & self.toppro) | (v as u16 & !self.toppro);
+                if self.is_enabled() && !was_on {
+                    self.prescale_accum = 0; // fresh arm of TOP0
                 }
-                self.enabled = en;
             }
             _ => {}
         }
@@ -220,6 +218,26 @@ mod tests {
         }
         assert_eq!(fires, 1, "exactly one tick in the first period");
         assert_eq!(first_fire_at, Some(6 * 40));
+    }
+
+    #[test]
+    fn toppro_protects_top0_enable_from_rewrite() {
+        // The EV-ECU arms TOP0 then protects it; a later per-channel TOPCEN write
+        // (the telltale/DTC channels) must NOT clear TOP0's enable bit.
+        let mut t = Timer::new();
+        t.write(TOP0RL, 2, 5);
+        t.write(TOP0CT, 2, 5);
+        t.write(TOPCEN, 2, 0x0001); // enable TOP0
+        t.write(TOPPRO, 2, 0x0001); // protect TOP0's enable bit
+        assert!(t.is_enabled());
+        // A telltale channel overwrites TOPCEN with only its own bit (e.g. ch3 = 0x40).
+        t.write(TOPCEN, 2, 0x0040);
+        assert!(t.is_enabled(), "protected TOP0 enable must survive the rewrite");
+        assert_eq!(t.read(TOPCEN, 2) & 0x0041, 0x0041, "ch3 also enabled, TOP0 kept");
+        // Unprotecting then clearing DOES stop it (the arm/disarm path).
+        t.write(TOPPRO, 2, 0x0000);
+        t.write(TOPCEN, 2, 0x0000);
+        assert!(!t.is_enabled());
     }
 
     #[test]
