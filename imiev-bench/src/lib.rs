@@ -196,8 +196,11 @@ impl Simulation {
         let ecu = Node::new("EV-ECU", ECU_FW)
             .with_adc_env(ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
+            .with_part(Box::new(DriverControls::default()))
             .with_local_part(Box::new(Ic2Companion::default()));
-        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL).with_source(Box::new(Vehicle))
+        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL)
+            .with_source(Box::new(Vehicle))
+            .with_source(Box::new(DcLink))
     }
 
     pub fn with_source(mut self, source: Box<dyn BusSource>) -> Self {
@@ -261,6 +264,17 @@ pub struct Vehicle;
 impl BusSource for Vehicle {
     fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
         vec![frame(ETACS_STATUS_ID, &[ETACS_IGNITION_ON, 0, 0, 0, 0, 0, 0, 0])]
+    }
+}
+
+const DC_LINK_ID: u16 = 0x236;
+const DC_LINK_CHARGED: [u8; 8] = [0x12, 0xf8, 0, 0, 0, 0, 0, 0];
+
+pub struct DcLink;
+
+impl BusSource for DcLink {
+    fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
+        vec![frame(DC_LINK_ID, &DC_LINK_CHARGED)]
     }
 }
 
@@ -374,14 +388,74 @@ pub struct Condenser {
     model: CondenserModel,
 }
 
+const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 0 REST / 5 precharge-request / 2 precharge / 6 HV-active
+
 impl Part for Condenser {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         let hv_up = chip.gpio_level(HV_UP_PORT) & HV_UP_BIT != 0;
-        self.model.step(hv_up);
+        let precharging = chip.peek(PRECHARGE_MASTER_STATE, 1) != 0;
+        self.model.step(hv_up || precharging);
         chip.adc_mut().set_channel(ecu_adc::CONDENSER, self.model.raw);
         let precharged = self.model.raw >= PRECHARGE_DONE_RAW;
         let fb = if precharged { CONTACTOR_FB_BIT } else { 0 };
         chip.set_gpio_input(PRECHARGE_FB_PORT, CONTACTOR_FB_BIT, fb);
+    }
+}
+
+const SHIFT_MAIN_PORT: u32 = 0x0080_0704; // P4DATA — shift switch matrix (main channel)
+const SHIFT_SUB_PORT: u32 = 0x0080_0702; // P2DATA — shift switch matrix (sub channel)
+const SHIFT_MATRIX_MASK: u8 = 0x3f; // six position switches, active-low
+const IGNITION_PORT: u32 = 0x0080_0709; // P9DATA
+const IGNITION_ON_BITS: u8 = 0x60; // IG1 + ST (start) asserted
+const RELAY_SENSE_PORT: u32 = 0x0080_0700; // P0DATA
+const RELAY_SENSE_BIT: u8 = 0x40; // P0.6 = EV-control-relay-commanded-on sense
+const P1_KEY_PORT: u32 = 0x0080_0701; // P1DATA
+const P1_KEY_BIT: u8 = 0x20; // P1.5, asserted with the key
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Gear {
+    Park,
+    Reverse,
+    Neutral,
+    Drive,
+    Eco,
+    Comfort,
+}
+
+impl Gear {
+    fn matrix(self) -> u8 {
+        let bit = match self {
+            Gear::Park => 5,
+            Gear::Reverse => 4,
+            Gear::Neutral => 3,
+            Gear::Drive => 2,
+            Gear::Eco => 1,
+            Gear::Comfort => 0,
+        };
+        SHIFT_MATRIX_MASK & !(1 << bit)
+    }
+}
+
+pub struct DriverControls {
+    pub gear: Gear,
+    pub key_on: bool,
+}
+
+impl Default for DriverControls {
+    fn default() -> Self {
+        DriverControls { gear: Gear::Park, key_on: true }
+    }
+}
+
+impl Part for DriverControls {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        let m = self.gear.matrix();
+        chip.set_gpio_input(SHIFT_MAIN_PORT, SHIFT_MATRIX_MASK, m);
+        chip.set_gpio_input(SHIFT_SUB_PORT, SHIFT_MATRIX_MASK, m);
+        let key = |bits| if self.key_on { bits } else { 0 };
+        chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
+        chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));
+        chip.set_gpio_input(P1_KEY_PORT, P1_KEY_BIT, key(P1_KEY_BIT));
     }
 }
 
