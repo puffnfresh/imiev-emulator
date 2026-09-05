@@ -50,7 +50,7 @@ const BMU_BOOT_ADC: &[(usize, u16)] = &[
 ];
 
 const ECU_BOOT_ADC: &[(usize, u16)] = &[
-    (ecu_adc::CONDENSER, 0x000),       // HV DC-link 0 V at boot (REST)
+    (ecu_adc::CONDENSER, 0x000),       // HV DC-link discharged at power-on; charges during precharge
     (ecu_adc::BRAKE_SUPPLY, SUPPLY_5V),
     (ecu_adc::ACCEL_1_SIGNAL, 0x0c0),  // released accelerator, main
     (ecu_adc::BRAKE_SIGNAL, 0x130),    // released brake (~1.5 V)
@@ -356,8 +356,6 @@ const HV_UP_BIT: u8 = 0x10; // b4 = HV-start command (firmware output)
 
 /// Charged reading: ~360 V pack
 const CONDENSER_FULL_RAW: u16 = 0x0333;
-/// Precharge is complete once the cap is near full (main contactor may then close).
-const PRECHARGE_DONE_RAW: u16 = 0x0266; // ~3/4 of full
 // Per-step fraction (num/den of the remaining distance) toward the target: a gentle
 // RC charge through the current-limit resistor, a faster passive discharge.
 const CHARGE_NUM: u32 = 1;
@@ -397,12 +395,11 @@ const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 0 REST / 5 precharge-request
 
 impl Part for Condenser {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        let hv_up = chip.gpio_level(HV_UP_PORT) & HV_UP_BIT != 0;
-        let precharging = chip.peek(PRECHARGE_MASTER_STATE, 1) != 0;
-        self.model.step(hv_up || precharging);
+        let commanded = chip.gpio_level(HV_UP_PORT) & HV_UP_BIT != 0
+            || chip.peek(PRECHARGE_MASTER_STATE, 1) != 0;
+        self.model.step(commanded);
         chip.adc_mut().set_channel(ecu_adc::CONDENSER, self.model.raw);
-        let precharged = self.model.raw >= PRECHARGE_DONE_RAW;
-        let fb = if precharged { CONTACTOR_FB_BIT } else { 0 };
+        let fb = if commanded { CONTACTOR_FB_BIT } else { 0 };
         chip.set_gpio_input(PRECHARGE_FB_PORT, CONTACTOR_FB_BIT, fb);
     }
 }
@@ -489,6 +486,7 @@ const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question fram
 pub struct Ic2Companion {
     armed_watch: bool,
     question_sent: bool,
+    heartbeat: u32,
 }
 
 impl Ic2Companion {
@@ -517,13 +515,16 @@ impl Ic2Companion {
             [0x35, id, slot_data, 0xAA] // per-id ack for a 0x10-family slot
         };
 
+        Self::framed(payload)
+    }
+
+    fn framed(payload: [u8; 4]) -> [u8; 5] {
         let mut sum = 0u32;
         for &b in &payload {
             sum += b as u32;
             sum = (sum & 0xff) + (sum >> 8);
         }
-        let chk = !sum as u8;
-        [payload[0], payload[1], payload[2], payload[3], chk]
+        [payload[0], payload[1], payload[2], payload[3], !sum as u8]
     }
 }
 
@@ -536,13 +537,36 @@ impl Part for Ic2Companion {
         if chip.take_pc_hit() {
             self.question_sent = true;
         }
-        if self.question_sent && !chip.ic2_rx_pending() && chip.ic2_take_rx_armed() {
-            self.question_sent = false;
-            let frame = Self::reply(chip);
-            chip.ic2_answer(&frame);
+        if chip.ic2_rx_pending() {
+            return; // previous frame not yet consumed by DMA5
+        }
+        if self.question_sent {
+            if chip.ic2_take_rx_armed() {
+                self.question_sent = false;
+                let frame = Self::reply(chip);
+                chip.ic2_answer(&frame);
+            }
+            self.heartbeat = 0; // a live exchange resets the idle-heartbeat cadence
+            return;
+        }
+        let precharging = chip.peek(0x0080_dd4e, 1) >= 2; // operating_mode >= PRECHARGE
+        if precharging && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff && chip.ic2_rx_armed() {
+            self.heartbeat = self.heartbeat.wrapping_add(1);
+            if self.heartbeat.is_multiple_of(IC2_HEARTBEAT_IDLE) {
+                let frame = if (self.heartbeat / IC2_HEARTBEAT_IDLE).is_multiple_of(2) {
+                    let ctr = chip.peek(0x0080_8293, 1) as u8;
+                    Self::framed([0x33, 0x00, ctr, 0xAA])
+                } else {
+                    Self::framed([0x11, 0x00, 0x00, 0x00])
+                };
+                chip.ic2_take_rx_armed();
+                chip.ic2_answer(&frame);
+            }
         }
     }
 }
+
+const IC2_HEARTBEAT_IDLE: u32 = 8;
 
 #[cfg(test)]
 mod tests {
@@ -578,6 +602,29 @@ mod tests {
             }
         }
         assert!(reached_precharge, "ECU never reached PRECHARGE (mode machine stalled in REST)");
+    }
+
+    #[test]
+    fn imiev_ecu_holds_precharge() {
+        let mut sim = Simulation::imiev();
+        let mut reached = false;
+        for _ in 0..320 {
+            sim.run(100_000); // ~32M steps total, well past the old ~8M P060C reset
+            let op = sim.node(1).system().peek(ECU_OPERATING_MODE, 1);
+            if op == OP_MODE_PRECHARGE {
+                reached = true;
+            } else if reached {
+                let e = sim.node(1).system();
+                let mut dtcs = String::new();
+                for idx in 0..0xbau32 {
+                    if e.peek(0x0080_4a00 + idx, 1) & 0x02 != 0 {
+                        dtcs.push_str(&format!(" {idx}"));
+                    }
+                }
+                panic!("ECU fell out of PRECHARGE to op={op} (confirmed DTC idx:{dtcs})");
+            }
+        }
+        assert!(reached, "ECU never reached PRECHARGE");
     }
 
     #[test]

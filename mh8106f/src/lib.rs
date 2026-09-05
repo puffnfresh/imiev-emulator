@@ -308,6 +308,10 @@ impl System {
         self.mem.ic2.take_rx_armed()
     }
 
+    pub fn ic2_rx_armed(&self) -> bool {
+        self.mem.ic2.rx_armed()
+    }
+
     pub fn ic2_answer(&mut self, bytes: &[u8]) {
         self.mem.ic2_deliver_rx(bytes);
     }
