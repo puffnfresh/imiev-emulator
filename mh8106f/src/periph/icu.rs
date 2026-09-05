@@ -91,6 +91,11 @@ impl Icu {
         self.icr[(addr - ICR_BASE) as usize]
     }
 
+    pub fn icr_enabled(&self, addr: u32) -> bool {
+        let level = self.icr[(addr - ICR_BASE) as usize] & ILEVEL_MASK;
+        level != LEVEL_DISABLED && level < (self.imask & ILEVEL_MASK)
+    }
+
     pub fn icr_clear(&mut self, addr: u32, mask: u8) {
         self.icr[(addr - ICR_BASE) as usize] &= !mask;
     }

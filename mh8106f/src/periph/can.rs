@@ -81,6 +81,7 @@ impl CanModule {
 
     pub fn deliver_rx_into(&mut self, slot: u32, id: u16, data: &[u8]) -> u16 {
         self.write_rx_slot(slot, id, data);
+        self.regs[(SLOT_CTRL_BASE + slot) as usize] = RR | TRFIN;
         self.rx_ivect
     }
 
@@ -97,8 +98,6 @@ impl CanModule {
         }
         self.regs[base + SLOT_DATA0 as usize..base + SLOT_DATA0 as usize + len]
             .copy_from_slice(&data[..len]);
-        // Receive slot, finished receiving.
-        self.regs[(SLOT_CTRL_BASE + slot) as usize] = RR | TRFIN;
         let slist = be_read(&self.regs, SLIST as usize, 4) | (0x8000_0000u32 >> slot);
         be_write(&mut self.regs, SLIST as usize, 4, slist);
     }
@@ -152,6 +151,13 @@ impl Peripheral for CanModule {
 
     fn write(&mut self, a: u32, size: u32, v: u32) {
         let off = self.off(a);
+        if (SLIST..SLIST + 4).contains(&(off as u32)) {
+            for i in 0..size as usize {
+                let shift = 8 * (size as usize - 1 - i);
+                self.regs[off + i] &= (v >> shift) as u8;
+            }
+            return;
+        }
         be_write(&mut self.regs, off, size, v);
         for a in a..a + size {
             let off = a - self.base;
@@ -173,6 +179,26 @@ mod tests {
     }
     fn slot_field(base: u32, n: u32, field: u32) -> u32 {
         base + SLOT_BASE + n * SLOT_STRIDE + field
+    }
+
+    #[test]
+    fn slist_is_write_zero_to_clear() {
+        let base = 0x0080_1000;
+        let mut can = CanModule::new(base, 0x0000);
+        // Arm two mailboxes and receive on both -> two pending bits.
+        for (slot, sid) in [(15u32, 0x412u16), (16, 0x236)] {
+            let (s0, s1) = encode_sid(sid);
+            can.write(slot_field(base, slot, SLOT_SID0), 1, s0 as u32);
+            can.write(slot_field(base, slot, SLOT_SID1), 1, s1 as u32);
+            can.write(slot_ctrl(base, slot), 1, RR as u32);
+            can.deliver_rx(sid, &[0]);
+        }
+        let (b15, b16) = (0x8000_0000u32 >> 15, 0x8000_0000u32 >> 16);
+        assert_eq!(can.read(base + SLIST, 4) & (b15 | b16), b15 | b16);
+        // Ack slot 15 by writing ~b15: slot 15 clears, slot 16 must survive.
+        can.write(base + SLIST, 4, !b15);
+        assert_eq!(can.read(base + SLIST, 4) & b15, 0, "serviced slot cleared");
+        assert_eq!(can.read(base + SLIST, 4) & b16, b16, "other slot must NOT be set/kept");
     }
 
     #[test]

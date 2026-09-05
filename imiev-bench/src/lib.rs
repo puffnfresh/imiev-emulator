@@ -197,7 +197,8 @@ impl Simulation {
             .with_adc_env(ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(DriverControls::default()))
-            .with_local_part(Box::new(Ic2Companion::default()));
+            .with_local_part(Box::new(Ic2Companion::default()))
+            .with_local_part(Box::new(Can0RxIsr::default()));
         Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL)
             .with_source(Box::new(Vehicle))
             .with_source(Box::new(DcLink))
@@ -266,6 +267,10 @@ impl BusSource for Vehicle {
         vec![frame(ETACS_STATUS_ID, &[ETACS_IGNITION_ON, 0, 0, 0, 0, 0, 0, 0])]
     }
 }
+
+const ECU_DISPATCH_JL: u32 = 0x0000_39bc;
+const ECU_DISPATCH_JL_RET: u32 = 0x0000_39c0;
+const ECU_CAN0_RX_ISR: u32 = 0x0002_7d40;
 
 const DC_LINK_ID: u16 = 0x236;
 const DC_LINK_CHARGED: [u8; 8] = [0x12, 0xf8, 0, 0, 0, 0, 0, 0];
@@ -456,6 +461,20 @@ impl Part for DriverControls {
         chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
         chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));
         chip.set_gpio_input(P1_KEY_PORT, P1_KEY_BIT, key(P1_KEY_BIT));
+    }
+}
+
+#[derive(Default)]
+pub struct Can0RxIsr {
+    armed: bool,
+}
+
+impl Part for Can0RxIsr {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        if !self.armed && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
+            chip.configure_can0_rx_isr(ECU_DISPATCH_JL, ECU_DISPATCH_JL_RET, ECU_CAN0_RX_ISR);
+            self.armed = true;
+        }
     }
 }
 
