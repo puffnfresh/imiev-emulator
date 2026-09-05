@@ -173,7 +173,8 @@ impl Peripheral for Timer {
             TOPPRO => self.toppro = v as u16,
             TOPCEN => {
                 let was_on = self.is_enabled();
-                self.topcen = (self.topcen & self.toppro) | (v as u16 & !self.toppro);
+                let v = v as u16;
+                self.topcen = ((self.topcen | v) & self.toppro) | (v & !self.toppro);
                 if self.is_enabled() && !was_on {
                     self.prescale_accum = 0; // fresh arm of TOP0
                 }
@@ -238,6 +239,19 @@ mod tests {
         t.write(TOPPRO, 2, 0x0000);
         t.write(TOPCEN, 2, 0x0000);
         assert!(!t.is_enabled());
+    }
+
+    #[test]
+    fn arm_takes_even_when_channel_already_protected() {
+        let mut t = Timer::new();
+        t.write(TOPPRO, 2, 0xffff); // protect everything first
+        t.write(TOP0RL, 2, 500);
+        t.write(TOP0CT, 2, 500);
+        t.write(TOPCEN, 2, 0x0001); // arm TOP0 through the protect
+        assert!(t.is_enabled(), "arming a protected channel ON must take");
+        // A later telltale-channel full overwrite (bit0 clear) must NOT disable TOP0.
+        t.write(TOPCEN, 2, 0x0040);
+        assert!(t.is_enabled(), "protected TOP0 enable survives a full-overwrite");
     }
 
     #[test]

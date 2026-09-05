@@ -321,6 +321,18 @@ impl System {
     }
 
 
+    pub fn deliver_scheduler_tick(&mut self) -> bool {
+        if self.cpu.in_eit != 0 || !self.cpu.interrupts_enabled() {
+            return false;
+        }
+        self.mem.raise_fast_tick_subsource(); // TOPIR0 bit0 = fast-tick pending
+        self.mem.icu.present(periph::timer::TICK_IVECT);
+        self.cpu.take_interrupt(periph::icu::EI_VECTOR);
+        self.interrupts_taken += 1;
+        self.mem.tick(1);
+        true
+    }
+
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
         self.mem.can0.take_tx()
     }

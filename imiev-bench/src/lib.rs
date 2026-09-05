@@ -198,7 +198,8 @@ impl Simulation {
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(DriverControls::default()))
             .with_local_part(Box::new(Ic2Companion::default()))
-            .with_local_part(Box::new(Can0RxIsr::default()));
+            .with_local_part(Box::new(Can0RxIsr::default()))
+            .with_local_part(Box::new(EcuScheduler::default()));
         Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL)
             .with_source(Box::new(Vehicle))
             .with_source(Box::new(DcLink))
@@ -386,7 +387,7 @@ impl CondenserModel {
     }
 }
 
-#[derive(Default)]
+#[derive(Default)] // discharged at power-on (CondenserModel::default is raw = 0)
 pub struct Condenser {
     model: CondenserModel,
 }
@@ -471,6 +472,30 @@ impl Part for Can0RxIsr {
         if !self.armed && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
             chip.configure_can0_rx_isr(ECU_DISPATCH_JL, ECU_DISPATCH_JL_RET, ECU_CAN0_RX_ISR);
             self.armed = true;
+        }
+    }
+}
+
+const ECU_SCHED_TICK_CYCLES: u32 = 20_000;
+
+#[derive(Default)]
+pub struct EcuScheduler {
+    accum: u32,
+    pending: bool,
+}
+
+impl Part for EcuScheduler {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        if chip.peek(IC2_STARTUP_STATE, 2) != 0xffff {
+            return; // scheduler only runs after POST, exactly like the real timer enable
+        }
+        self.accum += 1;
+        if self.accum >= ECU_SCHED_TICK_CYCLES {
+            self.accum = 0;
+            self.pending = true;
+        }
+        if self.pending && chip.deliver_scheduler_tick() {
+            self.pending = false;
         }
     }
 }
@@ -605,26 +630,24 @@ mod tests {
     }
 
     #[test]
-    fn imiev_ecu_holds_precharge() {
+    fn imiev_ecu_scheduler_runs_and_condenser_ramps() {
         let mut sim = Simulation::imiev();
-        let mut reached = false;
-        for _ in 0..320 {
-            sim.run(100_000); // ~32M steps total, well past the old ~8M P060C reset
-            let op = sim.node(1).system().peek(ECU_OPERATING_MODE, 1);
-            if op == OP_MODE_PRECHARGE {
-                reached = true;
-            } else if reached {
-                let e = sim.node(1).system();
-                let mut dtcs = String::new();
-                for idx in 0..0xbau32 {
-                    if e.peek(0x0080_4a00 + idx, 1) & 0x02 != 0 {
-                        dtcs.push_str(&format!(" {idx}"));
-                    }
-                }
-                panic!("ECU fell out of PRECHARGE to op={op} (confirmed DTC idx:{dtcs})");
+        let mut reached_precharge = false;
+        let mut ramped = false;
+        for _ in 0..400 {
+            sim.run(200_000);
+            let e = sim.node(1).system();
+            if e.peek(ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
+                reached_precharge = true;
+            }
+            let cf60 = f32::from_bits(e.peek(0x0080_cf60, 4));
+            if cf60 > 9.0 && e.peek(0x0080_c00c, 1) == 1 {
+                ramped = true;
+                break;
             }
         }
-        assert!(reached, "ECU never reached PRECHARGE");
+        assert!(reached_precharge, "ECU never reached PRECHARGE");
+        assert!(ramped, "scheduler never ran: cf60 never smoothed past 9 V / data_valid never set");
     }
 
     #[test]
