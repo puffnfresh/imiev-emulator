@@ -230,6 +230,20 @@ impl Simulation {
         }
     }
 
+    pub fn warm_bmu(&mut self, steps: u64) {
+        for _ in 0..steps {
+            {
+                let Simulation { bmu, bus, .. } = &mut *self;
+                bmu.step();
+                bmu.update_local_parts(bus);
+            }
+            self.cycle += 1;
+            if self.cycle.is_multiple_of(self.pump_every) {
+                self.pump();
+            }
+        }
+    }
+
     fn pump(&mut self) {
         let Simulation { bmu, ev_ecu, sources, bus, .. } = self;
         let mut tx: Vec<CanFrame> = Vec::new();
@@ -432,6 +446,8 @@ const RELAY_SENSE_PORT: u32 = 0x0080_0700; // P0DATA
 const RELAY_SENSE_BIT: u8 = 0x40; // P0.6 = EV-control-relay-commanded-on sense
 const P1_KEY_PORT: u32 = 0x0080_0701; // P1DATA
 const P1_KEY_BIT: u8 = 0x20; // P1.5, asserted with the key
+const CHARGE_DETECT_PORT: u32 = 0x0080_0703; // P3DATA
+const CHARGE_DETECT_BIT: u8 = 0x02; // P3.1
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Gear {
@@ -477,6 +493,7 @@ impl Part for DriverControls {
         chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
         chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));
         chip.set_gpio_input(P1_KEY_PORT, P1_KEY_BIT, key(P1_KEY_BIT));
+        chip.set_gpio_input(CHARGE_DETECT_PORT, CHARGE_DETECT_BIT, 0); // cable unplugged, contactor open
     }
 }
 
@@ -682,6 +699,19 @@ mod tests {
             .last(0x373)
             .expect("BMU never broadcast 0x373 onto the bus");
         assert!(f.data.iter().any(|&b| b != 0), "0x373 payload all zero");
+    }
+
+    #[test]
+    fn imiev_bmu_broadcasts_full_battery_frame_set() {
+        let mut sim = Simulation::imiev();
+        sim.run(13_000_000);
+        for id in [0x373u16, 0x374, 0x375] {
+            let f = sim
+                .bus()
+                .last(id)
+                .unwrap_or_else(|| panic!("BMU never broadcast 0x{id:03x}"));
+            assert!(f.data.iter().any(|&b| b != 0), "0x{id:03x} payload all zero");
+        }
     }
 
     #[test]

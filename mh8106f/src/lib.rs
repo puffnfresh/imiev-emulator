@@ -24,6 +24,7 @@ const IC2_RX_BUFFER: u32 = 0x0080_824e;
 
 const CAN0_BASE: u32 = 0x0080_1000;
 const CAN1_BASE: u32 = 0x0080_1400;
+const CAN0_TR_IVECT: u16 = 0x010c; // CAN0 Transmit/Receive interrupt (flash[0x807c])
 const CAN1_RX_IVECT: u16 = 0x0110;
 
 const ITOP10CR: u32 = 0x0080_0077;
@@ -51,6 +52,9 @@ pub(crate) struct Machine {
     pub can0: CanModule,
     pub can1: CanModule,
     pub last_unclaimed_sfr_read: u32,
+    wwatch: Option<(u32, u32)>,
+    cur_pc: u32,
+    wwatch_hits: Vec<(u32, u32, u32)>,
 }
 
 impl Machine {
@@ -67,10 +71,12 @@ impl Machine {
             adc: Adc::new(),
             gpio: Gpio::new(),
             ic2: Ic2::new(),
-            // CAN0 RX isn't modeled yet, so its RX IVECT is a placeholder.
-            can0: CanModule::new(CAN0_BASE, 0),
+            can0: CanModule::new(CAN0_BASE, CAN0_TR_IVECT),
             can1: CanModule::new(CAN1_BASE, CAN1_RX_IVECT),
             last_unclaimed_sfr_read: 0,
+            wwatch: None,
+            cur_pc: 0,
+            wwatch_hits: Vec::new(),
         }
     }
 
@@ -80,6 +86,9 @@ impl Machine {
         self.ic2.tick(cycles);
         self.ic2_service_tx();
         self.ic2_service_rx();
+        if let Some(iv) = self.can0.take_tx_irq() {
+            self.icu.raise(iv);
+        }
         if let Some(iv) = self.timer.advance(cycles) {
             self.icu.raise(iv);
         }
@@ -167,6 +176,12 @@ impl Machine {
     }
 
     fn write(&mut self, a: u32, size: u32, v: u32) {
+        if let Some((lo, hi)) = self.wwatch {
+            if a <= hi && a + size.saturating_sub(1) >= lo {
+                let pc = self.cur_pc;
+                self.wwatch_hits.push((pc, a, v));
+            }
+        }
         for dev in self.devices() {
             if dev.handles(a) {
                 return dev.write(a, size, v);
@@ -263,6 +278,15 @@ impl System {
         core::mem::take(&mut self.pc_hit)
     }
 
+    pub fn set_write_watch(&mut self, range: Option<(u32, u32)>) {
+        self.mem.wwatch = range;
+        self.mem.wwatch_hits.clear();
+    }
+
+    pub fn take_write_hits(&mut self) -> Vec<(u32, u32, u32)> {
+        core::mem::take(&mut self.mem.wwatch_hits)
+    }
+
     pub fn cpu(&self) -> &Cpu {
         &self.cpu
     }
@@ -340,6 +364,7 @@ impl System {
     /// Advance one CPU step, delivering a pending interrupt first if the core can
     /// take one. Returns the CPU's `step` result (false only on decode failure).
     pub fn step(&mut self) -> bool {
+        self.mem.cur_pc = self.cpu.pc;
         if self.pc_watch == Some(self.cpu.pc) {
             self.pc_hit = true;
         }

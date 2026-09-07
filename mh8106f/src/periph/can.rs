@@ -44,6 +44,7 @@ pub struct CanModule {
     regs: [u8; BLOCK_SIZE as usize],
     /// Frames the firmware has transmitted (TR set), for the bench to observe.
     tx: Vec<CanFrame>,
+    tx_irq: bool,
 }
 
 impl CanModule {
@@ -53,6 +54,15 @@ impl CanModule {
             rx_ivect,
             regs: [0; BLOCK_SIZE as usize],
             tx: Vec::new(),
+            tx_irq: false,
+        }
+    }
+
+    pub fn take_tx_irq(&mut self) -> Option<u16> {
+        if core::mem::take(&mut self.tx_irq) && self.rx_ivect != 0 {
+            Some(self.rx_ivect)
+        } else {
+            None
         }
     }
 
@@ -132,11 +142,13 @@ impl CanModule {
         let mut data = [0u8; 8];
         data.copy_from_slice(&self.regs[base + SLOT_DATA0 as usize..base + SLOT_DATA0 as usize + 8]);
         self.tx.push(CanFrame { id, dlc, data });
-        // Completion: clear the request, mark finished, raise the slot's status bit.
+        // Completion: clear the request, mark finished, raise the slot's status bit,
+        // and flag the transmit-complete interrupt so the firmware's ISR chains the next.
         let ctrl = (SLOT_CTRL_BASE + slot) as usize;
         self.regs[ctrl] = (self.regs[ctrl] & !TR) | TRFIN;
         let slist = be_read(&self.regs, SLIST as usize, 4) | (0x8000_0000u32 >> slot);
         be_write(&mut self.regs, SLIST as usize, 4, slist);
+        self.tx_irq = true;
     }
 }
 
