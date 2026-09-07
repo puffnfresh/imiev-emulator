@@ -78,6 +78,8 @@ impl Machine {
     pub fn tick(&mut self, cycles: u64) {
         self.adc.tick(cycles);
         self.ic2.tick(cycles);
+        self.ic2_service_tx();
+        self.ic2_service_rx();
         if let Some(iv) = self.timer.advance(cycles) {
             self.icu.raise(iv);
         }
@@ -109,13 +111,19 @@ impl Machine {
     }
 
     fn ic2_deliver_rx(&mut self, bytes: &[u8]) {
-        for (i, &b) in bytes.iter().enumerate() {
-            if let Some(off) = self.ram_off(IC2_RX_BUFFER + i as u32) {
-                self.ram[off] = b;
+        self.ic2.queue_rx(bytes);
+    }
+
+    fn ic2_service_rx(&mut self) {
+        if let Some((buf, len)) = self.ic2.take_ready_rx() {
+            for (i, &b) in buf.iter().take(len).enumerate() {
+                if let Some(off) = self.ram_off(IC2_RX_BUFFER + i as u32) {
+                    self.ram[off] = b;
+                }
             }
+            self.ic2.set_dma5_complete();
+            self.icu.raise(DMA59_IVECT);
         }
-        self.ic2.set_dma5_complete();
-        self.icu.raise(DMA59_IVECT);
     }
 
     fn peek(&self, a: u32, size: u32) -> u32 {
@@ -321,18 +329,6 @@ impl System {
     }
 
 
-    pub fn deliver_scheduler_tick(&mut self) -> bool {
-        if self.cpu.in_eit != 0 || !self.cpu.interrupts_enabled() {
-            return false;
-        }
-        self.mem.raise_fast_tick_subsource(); // TOPIR0 bit0 = fast-tick pending
-        self.mem.icu.present(periph::timer::TICK_IVECT);
-        self.cpu.take_interrupt(periph::icu::EI_VECTOR);
-        self.interrupts_taken += 1;
-        self.mem.tick(1);
-        true
-    }
-
     pub fn take_can0_tx(&mut self) -> Vec<CanFrame> {
         self.mem.can0.take_tx()
     }
@@ -356,7 +352,6 @@ impl System {
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
         if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
-            self.mem.ic2_service_tx();
             // The chained slow tick takes priority over the fast tick.
             if self.mem.take_slow_tick_request() {
                 self.mem.icu.present(SLOW_TICK_IVECT);

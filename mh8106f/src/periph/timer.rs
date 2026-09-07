@@ -26,11 +26,14 @@ const TOPIS_MASK: u8 = 0x3f; // TOPIS0..TOPIS5 occupy the low six bits
 
 pub const TOP0CT: u32 = 0x0080_0240; // live down-counter (read gives current count)
 pub const TOP0RL: u32 = 0x0080_0242; // reload value
-pub const PRS0: u32 = 0x0080_0202; // prescaler 0
-pub const PRS1: u32 = 0x0080_0203; // prescaler 1
+pub const PRS0: u32 = 0x0080_0202; // prescaler 0 (feeds clock bus 0)
+pub const PRS1: u32 = 0x0080_0203; // prescaler 1 (feeds clock bus 1)
+pub const PRS2: u32 = 0x0080_0204; // prescaler 2 (feeds clock bus 2)
+pub const TOP05CR0: u32 = 0x0080_029a; // TOP0-5 Control Register 0 (halfword); TOP05CKS = low 2 bits
 pub const TOPPRO: u32 = 0x0080_02fc; // per-channel enable-protect (bit N protects TOPCEN bit N)
 pub const TOPCEN: u32 = 0x0080_02fe; // per-channel count enable (bit N = TOP channel N)
 const TOP0_EN: u16 = 1 << 0; // TOP0CEN — the scheduler tick channel
+const TOP05CKS_MASK: u16 = 0x3; // TOP0-5 clock source select: 0=bus0/PRS0 1=bus1/PRS1 2=bus2/PRS2
 
 /// A group of MJT counter registers of one sub-unit: channel `ch`'s counter is at
 /// `base + ch*stride` (a single-instance counter is `channels: 1`, with `stride`
@@ -77,6 +80,8 @@ pub struct Timer {
     reload: u16, // TOP0RL
     prs0: u8,
     prs1: u8,
+    prs2: u8,
+    top05cr0: u16, // TOP0-5 Control Register 0 (TOP05CKS = clock-bus select in low 2 bits)
     topcen: u16, // per-channel count enable (bit N)
     toppro: u16, // per-channel enable-protect (bit N locks TOPCEN bit N)
     prescale_accum: u32,
@@ -99,6 +104,8 @@ impl Timer {
             reload: 0,
             prs0: 0,
             prs1: 0,
+            prs2: 0,
+            top05cr0: 0,
             topcen: 0,
             toppro: 0,
             prescale_accum: 0,
@@ -111,13 +118,30 @@ impl Timer {
         self.topcen & TOP0_EN != 0
     }
 
+    pub fn reload(&self) -> u16 {
+        self.reload
+    }
+    pub fn prs0(&self) -> u8 {
+        self.prs0
+    }
+    pub fn prs1(&self) -> u8 {
+        self.prs1
+    }
+    pub fn toppro(&self) -> u16 {
+        self.toppro
+    }
+
     pub fn raise_topis(&mut self, ch: u8) {
         self.topis |= 1 << ch;
     }
 
     fn prescale_div(&self) -> u32 {
-        // PRS0 clocks TOP0; the BMU leaves it 0 (÷1 = TOP0RL cycles/tick).
-        self.prs0 as u32 + 1
+        let prs = match self.top05cr0 & TOP05CKS_MASK {
+            1 => self.prs1,
+            2 => self.prs2,
+            _ => self.prs0,
+        };
+        prs as u32 + 1
     }
 
     pub fn advance(&mut self, cycles: u64) -> Option<u16> {
@@ -143,7 +167,8 @@ impl Timer {
 
 impl Peripheral for Timer {
     fn handles(&self, a: u32) -> bool {
-        matches!(a, TOPIR0 | TOP0CT | TOP0RL | PRS0 | PRS1 | TOPPRO | TOPCEN) || is_freerun_counter(a)
+        matches!(a, TOPIR0 | TOP0CT | TOP0RL | PRS0 | PRS1 | PRS2 | TOP05CR0 | TOPPRO | TOPCEN)
+            || is_freerun_counter(a)
     }
 
     fn read(&mut self, a: u32, size: u32) -> u32 {
@@ -153,6 +178,8 @@ impl Peripheral for Timer {
             TOP0RL => self.reload as u32,
             PRS0 => self.prs0 as u32,
             PRS1 => self.prs1 as u32,
+            PRS2 => self.prs2 as u32,
+            TOP05CR0 => self.top05cr0 as u32,
             TOPPRO => self.toppro as u32,
             TOPCEN => self.topcen as u32,
             _ if is_freerun_counter(a) => {
@@ -170,6 +197,8 @@ impl Peripheral for Timer {
             TOP0RL => self.reload = v as u16,
             PRS0 => self.prs0 = v as u8,
             PRS1 => self.prs1 = v as u8,
+            PRS2 => self.prs2 = v as u8,
+            TOP05CR0 => self.top05cr0 = v as u16,
             TOPPRO => self.toppro = v as u16,
             TOPCEN => {
                 let was_on = self.is_enabled();

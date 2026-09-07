@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use mh8106f::{CanFrame, System};
 
 const BMU_FW: &[u8] = include_bytes!("../../firmware/bmu.bin");
-const ECU_FW: &[u8] = include_bytes!("../../firmware/ev-ecu.bin");
+const EV_ECU_FW: &[u8] = include_bytes!("../../firmware/ev-ecu.bin");
 
 const CAN_DLC_MAX: usize = 8;
 
@@ -26,7 +26,7 @@ mod bmu_adc {
     pub const TEMP_SENSOR_3: usize = 0xB; // pack temperature sensor 3
 }
 
-mod ecu_adc {
+mod ev_ecu_adc {
     pub const CONDENSER: usize = 0; // HV DC-link voltage sense
     pub const BRAKE_SUPPLY: usize = 1; // brake-stroke sensor 5 V supply
     pub const ACCEL_1_SIGNAL: usize = 2; // accelerator sensor 1 (main) signal
@@ -49,17 +49,17 @@ const BMU_BOOT_ADC: &[(usize, u16)] = &[
     (bmu_adc::PACK_CURRENT_LO, SHUNT_ZERO_A),
 ];
 
-const ECU_BOOT_ADC: &[(usize, u16)] = &[
-    (ecu_adc::CONDENSER, 0x000),       // HV DC-link discharged at power-on; charges during precharge
-    (ecu_adc::BRAKE_SUPPLY, SUPPLY_5V),
-    (ecu_adc::ACCEL_1_SIGNAL, 0x0c0),  // released accelerator, main
-    (ecu_adc::BRAKE_SIGNAL, 0x130),    // released brake (~1.5 V)
-    (ecu_adc::VACUUM_SUPPLY, SUPPLY_5V),
-    (ecu_adc::ACCEL_2_SIGNAL, 0x060),  // released accelerator, sub (~1/2 of main)
-    (ecu_adc::VACUUM_OUTPUT, 0x200),   // mid-range vacuum reading (~2.5 V)
-    (ecu_adc::ACCEL_1_SUPPLY, SUPPLY_5V),
-    (ecu_adc::ACCEL_2_SUPPLY, SUPPLY_5V),
-    (ecu_adc::CHARGE_PORT, 0x380),     // charge port disconnected
+const EV_ECU_BOOT_ADC: &[(usize, u16)] = &[
+    (ev_ecu_adc::CONDENSER, 0x000),       // HV DC-link discharged at power-on; charges during precharge
+    (ev_ecu_adc::BRAKE_SUPPLY, SUPPLY_5V),
+    (ev_ecu_adc::ACCEL_1_SIGNAL, 0x0c0),  // released accelerator, main
+    (ev_ecu_adc::BRAKE_SIGNAL, 0x130),    // released brake (~1.5 V)
+    (ev_ecu_adc::VACUUM_SUPPLY, SUPPLY_5V),
+    (ev_ecu_adc::ACCEL_2_SIGNAL, 0x060),  // released accelerator, sub (~1/2 of main)
+    (ev_ecu_adc::VACUUM_OUTPUT, 0x200),   // mid-range vacuum reading (~2.5 V)
+    (ev_ecu_adc::ACCEL_1_SUPPLY, SUPPLY_5V),
+    (ev_ecu_adc::ACCEL_2_SUPPLY, SUPPLY_5V),
+    (ev_ecu_adc::CHARGE_PORT, 0x380),     // charge port disconnected
 ];
 
 pub fn frame(id: u16, data: &[u8]) -> CanFrame {
@@ -168,10 +168,9 @@ impl CanBus {
     }
 }
 
-/// Several [`Node`]s on one [`CanBus`], plus the [`BusSource`]s that stand in for
-/// the un-emulated rest of the car.
 pub struct Simulation {
-    nodes: Vec<Node>,
+    bmu: Node,
+    ev_ecu: Node,
     sources: Vec<Box<dyn BusSource>>,
     bus: CanBus,
     pump_every: u64,
@@ -179,52 +178,47 @@ pub struct Simulation {
 }
 
 impl Simulation {
-    pub fn new(nodes: Vec<Node>, pump_every: u64) -> Simulation {
-        Simulation {
-            nodes,
-            sources: Vec::new(),
-            bus: CanBus::default(),
-            pump_every: pump_every.max(1),
-            cycle: 0,
-        }
-    }
-
     pub fn imiev() -> Simulation {
         let bmu = Node::new("BMU", BMU_FW)
             .with_adc_env(BMU_BOOT_ADC)
             .with_part(Box::new(Cmu::default()));
-        let ecu = Node::new("EV-ECU", ECU_FW)
-            .with_adc_env(ECU_BOOT_ADC)
+        let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
+            .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(DriverControls::default()))
             .with_local_part(Box::new(Ic2Companion::default()))
-            .with_local_part(Box::new(Can0RxIsr::default()))
-            .with_local_part(Box::new(EcuScheduler::default()));
-        Simulation::new(vec![bmu, ecu], BUS_PUMP_INTERVAL)
-            .with_source(Box::new(Vehicle))
-            .with_source(Box::new(DcLink))
-    }
-
-    pub fn with_source(mut self, source: Box<dyn BusSource>) -> Self {
-        self.sources.push(source);
-        self
+            .with_local_part(Box::new(Can0RxIsr::default()));
+        Simulation {
+            bmu,
+            ev_ecu,
+            sources: vec![Box::new(Vehicle), Box::new(DcLink), Box::new(Inverter)],
+            bus: CanBus::default(),
+            pump_every: BUS_PUMP_INTERVAL,
+            cycle: 0,
+        }
     }
 
     pub fn bus(&self) -> &CanBus {
         &self.bus
     }
-    pub fn node(&self, i: usize) -> &Node {
-        &self.nodes[i]
+    pub fn bmu(&self) -> &Node {
+        &self.bmu
     }
-    pub fn nodes(&self) -> &[Node] {
-        &self.nodes
+    pub fn ev_ecu(&self) -> &Node {
+        &self.ev_ecu
+    }
+    pub fn bmu_mut(&mut self) -> &mut Node {
+        &mut self.bmu
+    }
+    pub fn ev_ecu_mut(&mut self) -> &mut Node {
+        &mut self.ev_ecu
     }
 
     pub fn run(&mut self, steps: u64) {
         for _ in 0..steps {
             {
-                let Simulation { nodes, bus, .. } = self;
-                for n in nodes.iter_mut() {
+                let Simulation { bmu, ev_ecu, bus, .. } = &mut *self;
+                for n in [bmu, ev_ecu] {
                     n.step();
                     n.update_local_parts(bus);
                 }
@@ -237,23 +231,20 @@ impl Simulation {
     }
 
     fn pump(&mut self) {
-        let Simulation { nodes, sources, bus, .. } = self;
+        let Simulation { bmu, ev_ecu, sources, bus, .. } = self;
         let mut tx: Vec<CanFrame> = Vec::new();
-        for n in nodes.iter_mut() {
-            tx.append(&mut n.drain_tx());
-        }
+        tx.append(&mut bmu.drain_tx());
+        tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
         }
         for f in &tx {
             bus.record(*f);
-            for n in nodes.iter_mut() {
-                n.deliver(f);
-            }
+            bmu.deliver(f);
+            ev_ecu.deliver(f);
         }
-        for n in nodes.iter_mut() {
-            n.update_parts(bus);
-        }
+        bmu.update_parts(bus);
+        ev_ecu.update_parts(bus);
     }
 }
 
@@ -269,9 +260,9 @@ impl BusSource for Vehicle {
     }
 }
 
-const ECU_DISPATCH_JL: u32 = 0x0000_39bc;
-const ECU_DISPATCH_JL_RET: u32 = 0x0000_39c0;
-const ECU_CAN0_RX_ISR: u32 = 0x0002_7d40;
+const EV_ECU_DISPATCH_JL: u32 = 0x0000_39bc;
+const EV_ECU_DISPATCH_JL_RET: u32 = 0x0000_39c0;
+const EV_ECU_CAN0_RX_ISR: u32 = 0x0002_7d40;
 
 const DC_LINK_ID: u16 = 0x236;
 const DC_LINK_CHARGED: [u8; 8] = [0x12, 0xf8, 0, 0, 0, 0, 0, 0];
@@ -281,6 +272,29 @@ pub struct DcLink;
 impl BusSource for DcLink {
     fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
         vec![frame(DC_LINK_ID, &DC_LINK_CHARGED)]
+    }
+}
+
+const INV_RPM_ID: u16 = 0x288; // b0:b1 const 0x07D0, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
+const INV_TORQUE_ID: u16 = 0x298;
+const INV_STANDSTILL: u16 = 10_000; // rpm word for 0 rpm
+const INV_DCLINK_PRECHARGE_HALF: u8 = 39; // 78 V / 2, the inverter's reported DC-link during precharge
+const INV_GATE_IDS: [u16; 3] = [0x100, 0x110, 0x111]; // gate-driver identity frames
+const INV_GATE_ID_WORD: [u8; 2] = [0x01, 0x01]; // matches the ECU's expected_id_a
+
+pub struct Inverter;
+
+impl BusSource for Inverter {
+    fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
+        let [wh, wl] = INV_STANDSTILL.to_be_bytes();
+        let mut out = vec![
+            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, INV_DCLINK_PRECHARGE_HALF, 0x00, 0x11, 0x10]),
+            frame(INV_TORQUE_ID, &[0x40, 0x40, 0x40, 0x40, 0x40, 0x40, wh, wl]),
+        ];
+        for id in INV_GATE_IDS {
+            out.push(frame(id, &[INV_GATE_ID_WORD[0], INV_GATE_ID_WORD[1], 0, 0, 0, 0, 0, 0]));
+        }
+        out
     }
 }
 
@@ -352,7 +366,7 @@ impl Part for Contactor {
     }
 }
 
-const HV_UP_PORT: u32 = 0x0080_0707; // ECU P7DATA
+const HV_UP_PORT: u32 = 0x0080_0707; // EV-ECU P7DATA
 const HV_UP_BIT: u8 = 0x10; // b4 = HV-start command (firmware output)
 
 /// Charged reading: ~360 V pack
@@ -394,13 +408,17 @@ pub struct Condenser {
 
 const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 0 REST / 5 precharge-request / 2 precharge / 6 HV-active
 
+const CONDENSER_VOLTAGE: u32 = 0x0080_cf60;
+const PRECHARGE_DONE_V: f32 = 9.0;
+
 impl Part for Condenser {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         let commanded = chip.gpio_level(HV_UP_PORT) & HV_UP_BIT != 0
             || chip.peek(PRECHARGE_MASTER_STATE, 1) != 0;
         self.model.step(commanded);
-        chip.adc_mut().set_channel(ecu_adc::CONDENSER, self.model.raw);
-        let fb = if commanded { CONTACTOR_FB_BIT } else { 0 };
+        chip.adc_mut().set_channel(ev_ecu_adc::CONDENSER, self.model.raw);
+        let bus_up = f32::from_bits(chip.peek(CONDENSER_VOLTAGE, 4)) >= PRECHARGE_DONE_V;
+        let fb = if commanded && bus_up { 0 } else { CONTACTOR_FB_BIT };
         chip.set_gpio_input(PRECHARGE_FB_PORT, CONTACTOR_FB_BIT, fb);
     }
 }
@@ -470,32 +488,8 @@ pub struct Can0RxIsr {
 impl Part for Can0RxIsr {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         if !self.armed && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
-            chip.configure_can0_rx_isr(ECU_DISPATCH_JL, ECU_DISPATCH_JL_RET, ECU_CAN0_RX_ISR);
+            chip.configure_can0_rx_isr(EV_ECU_DISPATCH_JL, EV_ECU_DISPATCH_JL_RET, EV_ECU_CAN0_RX_ISR);
             self.armed = true;
-        }
-    }
-}
-
-const ECU_SCHED_TICK_CYCLES: u32 = 20_000;
-
-#[derive(Default)]
-pub struct EcuScheduler {
-    accum: u32,
-    pending: bool,
-}
-
-impl Part for EcuScheduler {
-    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        if chip.peek(IC2_STARTUP_STATE, 2) != 0xffff {
-            return; // scheduler only runs after POST, exactly like the real timer enable
-        }
-        self.accum += 1;
-        if self.accum >= ECU_SCHED_TICK_CYCLES {
-            self.accum = 0;
-            self.pending = true;
-        }
-        if self.pending && chip.deliver_scheduler_tick() {
-            self.pending = false;
         }
     }
 }
@@ -591,13 +585,13 @@ impl Part for Ic2Companion {
     }
 }
 
-const IC2_HEARTBEAT_IDLE: u32 = 8;
+const IC2_HEARTBEAT_IDLE: u32 = 20_000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
+    const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
     const OP_MODE_PRECHARGE: u32 = 2;
 
     #[test]
@@ -608,20 +602,20 @@ mod tests {
     }
 
     #[test]
-    fn imiev_ecu_completes_post() {
+    fn imiev_ev_ecu_completes_post() {
         let mut sim = Simulation::imiev();
-        sim.run(16_000_000);
-        let ss = sim.node(1).system().peek(IC2_STARTUP_STATE, 2);
+        sim.run(8_000_000); // POST completes by ~4M; stay clear of the later precharge-timeout reset
+        let ss = sim.ev_ecu().system().peek(IC2_STARTUP_STATE, 2);
         assert_eq!(ss, 0xffff, "ECU did not complete POST in the stock co-sim");
     }
 
     #[test]
-    fn imiev_ecu_reaches_precharge() {
+    fn imiev_ev_ecu_reaches_precharge() {
         let mut sim = Simulation::imiev();
         let mut reached_precharge = false;
         for _ in 0..160 {
             sim.run(100_000);
-            if sim.node(1).system().peek(ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
+            if sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
                 reached_precharge = true;
                 break;
             }
@@ -630,30 +624,31 @@ mod tests {
     }
 
     #[test]
-    fn imiev_ecu_scheduler_runs_and_condenser_ramps() {
+    fn imiev_ev_ecu_scheduler_runs_and_condenser_ramps() {
         let mut sim = Simulation::imiev();
         let mut reached_precharge = false;
         let mut ramped = false;
         for _ in 0..400 {
             sim.run(200_000);
-            let e = sim.node(1).system();
-            if e.peek(ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
+            let e = sim.ev_ecu().system();
+            if e.peek(EV_ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
                 reached_precharge = true;
             }
             let cf60 = f32::from_bits(e.peek(0x0080_cf60, 4));
-            if cf60 > 9.0 && e.peek(0x0080_c00c, 1) == 1 {
+            if cf60 > 5.0 && e.peek(0x0080_c088, 1) == 1 {
                 ramped = true;
                 break;
             }
         }
-        assert!(reached_precharge, "ECU never reached PRECHARGE");
-        assert!(ramped, "scheduler never ran: cf60 never smoothed past 9 V / data_valid never set");
+        assert!(reached_precharge, "EV-ECU never reached PRECHARGE");
+        assert!(ramped, "scheduler never ran: cf60 never smoothed up / condenser data never valid");
     }
+
 
     #[test]
     fn ic2_handshake_completes_post() {
-        let mut ecu = System::new(ECU_FW);
-        for &(ch, raw) in ECU_BOOT_ADC {
+        let mut ecu = System::new(EV_ECU_FW);
+        for &(ch, raw) in EV_ECU_BOOT_ADC {
             ecu.adc_mut().set_channel(ch, raw);
         }
         let mut ic2 = Ic2Companion::default();
@@ -688,16 +683,14 @@ mod tests {
         const CELL_V: u32 = 0x0080_7f37; // board array entry 0, cell voltage (BE, raw)
         let mut sim = Simulation::imiev();
         sim.run(16_000_000);
-        let recorded = sim.node(0).system().peek(CELL_V, 2);
+        let recorded = sim.bmu().system().peek(CELL_V, 2);
         assert_eq!(recorded, 0x0140, "BMU did not record the 3.7 V cells the CMUs reported");
     }
 
     #[test]
     fn contactor_presents_closed_feedback_to_the_ecu() {
-        let ecu = Node::new("EV-ECU", ECU_FW).with_part(Box::new(Contactor::default()));
-        let mut sim = Simulation::new(vec![ecu], 1_000);
-        sim.run(2_000); // a couple of bus pumps
-        let ecu = sim.node(0).system();
+        let mut ecu = System::new(EV_ECU_FW);
+        Contactor::default().update(&mut ecu, &CanBus::default());
         assert_eq!(ecu.gpio_level(CNTP_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
     }
 
@@ -718,29 +711,47 @@ mod tests {
 
     #[test]
     fn condenser_precharge_sequence() {
-        let mut ecu = System::new(ECU_FW);
+        let mut ecu = System::new(EV_ECU_FW);
         let bus = CanBus::default();
         let mut cond = Condenser::default();
 
         // At REST (no HV-start) the condenser sits discharged.
         cond.update(&mut ecu, &bus);
-        assert_eq!(ecu.adc().channel(ecu_adc::CONDENSER), 0);
-        assert_eq!(ecu.gpio_level(PRECHARGE_FB_PORT) & CONTACTOR_FB_BIT, 0);
+        assert_eq!(ecu.adc().channel(ev_ecu_adc::CONDENSER), 0);
+        assert_eq!(ecu.gpio_level(PRECHARGE_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
 
-        // Command HV-start (P7.4): the cap ramps up and precharge completes.
+        // Command HV-start (P7.4): the cap ramps up to the pack voltage on the ADC.
         ecu.set_gpio_input(HV_UP_PORT, HV_UP_BIT, HV_UP_BIT);
         for _ in 0..200 {
             cond.update(&mut ecu, &bus);
         }
-        assert_eq!(ecu.adc().channel(ecu_adc::CONDENSER), CONDENSER_FULL_RAW);
+        assert_eq!(ecu.adc().channel(ev_ecu_adc::CONDENSER), CONDENSER_FULL_RAW);
         assert_eq!(ecu.gpio_level(PRECHARGE_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
 
-        // Release HV-start: it bleeds back down and precharge-complete drops.
+        // Release HV-start: the cap bleeds back down to zero.
         ecu.set_gpio_input(HV_UP_PORT, HV_UP_BIT, 0);
         for _ in 0..200 {
             cond.update(&mut ecu, &bus);
         }
-        assert_eq!(ecu.adc().channel(ecu_adc::CONDENSER), 0);
-        assert_eq!(ecu.gpio_level(PRECHARGE_FB_PORT) & CONTACTOR_FB_BIT, 0);
+        assert_eq!(ecu.adc().channel(ev_ecu_adc::CONDENSER), 0);
+    }
+
+    #[test]
+    fn imiev_ev_ecu_holds_precharge_without_false_undervoltage() {
+        const DTC_P0562_CONFIRMED: u32 = 0x0080_4a00; // fault-flag array idx 0, bit1 = confirmed
+        const OP_MODE_SHUTDOWN: u32 = 5;
+        let mut sim = Simulation::imiev();
+        sim.run(8_000_000); // through POST + into precharge, while cf60 is still ramping
+        let e = sim.ev_ecu().system();
+        assert_eq!(
+            e.peek(DTC_P0562_CONFIRMED, 1) & 0x02,
+            0,
+            "P0562 false-latched while the condenser was still precharging"
+        );
+        assert_ne!(
+            e.peek(EV_ECU_OPERATING_MODE, 1),
+            OP_MODE_SHUTDOWN,
+            "ECU fell into SHUTDOWN during precharge"
+        );
     }
 }

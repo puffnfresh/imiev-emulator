@@ -34,8 +34,8 @@ impl Gpio {
 
     pub fn set_input(&mut self, addr: u32, mask: u8, value: u8) {
         if let Some(i) = Self::index(addr) {
-            self.in_mask[i] = mask;
-            self.in_val[i] = value & mask;
+            self.in_mask[i] |= mask;
+            self.in_val[i] = (self.in_val[i] & !mask) | (value & mask);
         }
     }
 

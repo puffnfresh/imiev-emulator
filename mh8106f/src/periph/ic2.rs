@@ -17,7 +17,8 @@ pub const DMA5_COMPLETE: u8 = 0x01; // DM59ITST bit0
 const DMA_ARM_CMD: u32 = 0x6d;
 const RX_ERROR: u8 = 0x80; // S2RCNT bit7
 
-const TX_LATENCY: u32 = 256;
+const TX_LATENCY: u32 = 256; // cycles to clock one byte out of S2TXB
+const RX_BYTE_LATENCY: u32 = 256; // cycles to clock one answer byte in over the serial link
 
 #[derive(Default)]
 pub struct Ic2 {
@@ -27,6 +28,10 @@ pub struct Ic2 {
     tx_event: bool, // a byte has finished clocking out of S2TXB (TX-complete)
     tx_latency: u32, // cycles remaining before the in-flight TX byte completes
     rx_armed: bool, // firmware armed DMA5 to receive the next answer
+    rx_buf: [u8; 8],
+    rx_len: usize,
+    rx_latency: u32,
+    rx_ready: bool,
 }
 
 impl Ic2 {
@@ -39,6 +44,12 @@ impl Ic2 {
             self.tx_latency = self.tx_latency.saturating_sub(cycles as u32);
             if self.tx_latency == 0 {
                 self.tx_event = true;
+            }
+        }
+        if self.rx_latency > 0 {
+            self.rx_latency = self.rx_latency.saturating_sub(cycles as u32);
+            if self.rx_latency == 0 {
+                self.rx_ready = true;
             }
         }
     }
@@ -55,6 +66,22 @@ impl Ic2 {
         core::mem::take(&mut self.rx_armed)
     }
 
+    pub fn queue_rx(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(self.rx_buf.len());
+        self.rx_buf[..n].copy_from_slice(&bytes[..n]);
+        self.rx_len = n;
+        self.rx_latency = RX_BYTE_LATENCY * n.max(1) as u32;
+        self.rx_ready = false;
+    }
+
+    pub fn take_ready_rx(&mut self) -> Option<([u8; 8], usize)> {
+        if core::mem::take(&mut self.rx_ready) {
+            Some((self.rx_buf, self.rx_len))
+        } else {
+            None
+        }
+    }
+
     pub fn set_tx_complete(&mut self) {
         self.si23st |= TX_COMPLETE;
     }
@@ -64,7 +91,7 @@ impl Ic2 {
     }
 
     pub fn rx_pending(&self) -> bool {
-        self.dm59itst & DMA5_COMPLETE != 0
+        self.dm59itst & DMA5_COMPLETE != 0 || self.rx_latency > 0 || self.rx_ready
     }
 }
 
@@ -131,5 +158,19 @@ mod tests {
         assert!(ic2.rx_armed());
         assert!(ic2.take_rx_armed());
         assert!(!ic2.rx_armed());
+    }
+
+    #[test]
+    fn queued_answer_clocks_in_over_serial_latency() {
+        let mut ic2 = Ic2::new();
+        ic2.queue_rx(&[0x35, 0x01, 0x00, 0x00, 0xc9]);
+        // The frame is in flight, not yet available, and blocks a second queue.
+        assert!(ic2.rx_pending(), "an in-flight answer counts as pending");
+        assert!(ic2.take_ready_rx().is_none(), "answer isn't ready until it clocks in");
+        ic2.tick((RX_BYTE_LATENCY * 5) as u64);
+        let (buf, len) = ic2.take_ready_rx().expect("answer ready after its serial latency");
+        assert_eq!(len, 5);
+        assert_eq!(&buf[..len], &[0x35, 0x01, 0x00, 0x00, 0xc9]);
+        assert!(ic2.take_ready_rx().is_none(), "delivery is one-shot");
     }
 }
