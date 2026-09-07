@@ -73,6 +73,13 @@ fn is_freerun_counter(a: u32) -> bool {
     a != TOP0CT && MJT_COUNTER_BANKS.iter().any(|bank| bank.holds(a))
 }
 
+const TMS_BANK_LO: u32 = 0x0080_03c0;
+const TMS_BANK_HI: u32 = 0x0080_03e0; // exclusive (TMS0, TMS1)
+
+fn is_tms_counter(a: u32) -> bool {
+    (TMS_BANK_LO..TMS_BANK_HI).contains(&a)
+}
+
 pub const TICK_IVECT: u16 = 0x00bc;
 
 pub struct Timer {
@@ -183,8 +190,12 @@ impl Peripheral for Timer {
             TOPPRO => self.toppro as u32,
             TOPCEN => self.topcen as u32,
             _ if is_freerun_counter(a) => {
-                // Monotonic free-running count, masked to the access width.
-                self.cycles as u32 & super::width_mask(size)
+                let raw = if is_tms_counter(a) {
+                    self.cycles / (self.prs0 as u64 + 1)
+                } else {
+                    self.cycles
+                };
+                raw as u32 & super::width_mask(size)
             }
             _ => 0,
         }
@@ -301,6 +312,18 @@ mod tests {
         assert_eq!(t.read(0x800250, 4), 0);
         t.advance(1234);
         assert_eq!(t.read(0x800250, 4), 1234);
+    }
+
+    #[test]
+    fn tms_counter_is_prescaled_by_prs0() {
+        let mut t = Timer::new();
+        t.write(PRS0, 1, 39); // clock bus 0 = BCLK/PRS0; ÷40, as timer_tio3_init sets it
+        t.advance(4000);
+        // TMS1CT (0x8003d0) counts clock bus 0, so it advances once per (PRS0+1)=40 cycles.
+        // Fixed-interval firmware timing (IC2 poll = TMS1CT + 0x2ee) depends on this rate.
+        assert_eq!(t.read(0x8003d0, 2), 100);
+        // A plain free-running channel (TIO0) still reads raw elapsed cycles.
+        assert_eq!(t.read(0x800300, 4), 4000);
     }
 
     #[test]

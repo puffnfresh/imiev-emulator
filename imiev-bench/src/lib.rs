@@ -505,7 +505,9 @@ const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question fram
 pub struct Ic2Companion {
     armed_watch: bool,
     question_sent: bool,
-    heartbeat: u32,
+    hb: u32,       // post-POST heartbeat tick; schedules the watchdog kicks on a 1/6 rotation
+    kick11: bool,  // an unsolicited [0x11] status kick is queued (resets isotp_tx_timer_a)
+    kick33: bool,  // an unsolicited [0x33] self-test kick is queued (resets adc_watchdog_count_b)
 }
 
 impl Ic2Companion {
@@ -559,33 +561,37 @@ impl Part for Ic2Companion {
         if chip.ic2_rx_pending() {
             return; // previous frame not yet consumed by DMA5
         }
-        if self.question_sent {
-            if chip.ic2_take_rx_armed() {
-                self.question_sent = false;
-                let frame = Self::reply(chip);
-                chip.ic2_answer(&frame);
+        let post_post = chip.peek(IC2_STARTUP_STATE, 2) == 0xffff;
+        if post_post {
+            self.hb = self.hb.wrapping_add(1);
+            if self.hb.is_multiple_of(6) {
+                self.kick33 = true;
+            } else if self.hb % 6 == 3 {
+                self.kick11 = true;
             }
-            self.heartbeat = 0; // a live exchange resets the idle-heartbeat cadence
+        }
+        if !chip.ic2_rx_armed() {
             return;
         }
-        let precharging = chip.peek(0x0080_dd4e, 1) >= 2; // operating_mode >= PRECHARGE
-        if precharging && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff && chip.ic2_rx_armed() {
-            self.heartbeat = self.heartbeat.wrapping_add(1);
-            if self.heartbeat.is_multiple_of(IC2_HEARTBEAT_IDLE) {
-                let frame = if (self.heartbeat / IC2_HEARTBEAT_IDLE).is_multiple_of(2) {
-                    let ctr = chip.peek(0x0080_8293, 1) as u8;
-                    Self::framed([0x33, 0x00, ctr, 0xAA])
-                } else {
-                    Self::framed([0x11, 0x00, 0x00, 0x00])
-                };
-                chip.ic2_take_rx_armed();
-                chip.ic2_answer(&frame);
-            }
+        if self.question_sent {
+            self.question_sent = false;
+            chip.ic2_take_rx_armed();
+            let frame = Self::reply(chip);
+            chip.ic2_answer(&frame);
+            return;
+        }
+        if self.kick33 {
+            self.kick33 = false;
+            chip.ic2_take_rx_armed();
+            let ctr = chip.peek(0x0080_8293, 1) as u8;
+            chip.ic2_answer(&Self::framed([0x33, 0x00, ctr, 0xAA]));
+        } else if self.kick11 {
+            self.kick11 = false;
+            chip.ic2_take_rx_armed();
+            chip.ic2_answer(&Self::framed([0x11, 0x00, 0x00, 0x00]));
         }
     }
 }
-
-const IC2_HEARTBEAT_IDLE: u32 = 20_000;
 
 #[cfg(test)]
 mod tests {
@@ -685,6 +691,21 @@ mod tests {
         sim.run(16_000_000);
         let recorded = sim.bmu().system().peek(CELL_V, 2);
         assert_eq!(recorded, 0x0140, "BMU did not record the 3.7 V cells the CMUs reported");
+    }
+
+    #[test]
+    fn imiev_bmu_reaches_cmu_valid() {
+        const VALIDITY_FLAG9: u32 = 0x0080_bef9;
+        const CMU_DATA_VALID: u32 = 0x0080_bfbe;
+        const CMU_COMMS_HEALTHY: u32 = 0x0080_d6be;
+        const CMU_VALID: u32 = 0x0080_befa;
+        let mut sim = Simulation::imiev();
+        sim.run(13_000_000);
+        let bmu = sim.bmu().system();
+        assert_eq!(bmu.peek(VALIDITY_FLAG9, 1), 1, "sensor validity gate never latched");
+        assert_eq!(bmu.peek(CMU_DATA_VALID, 1), 1, "cmu_data_valid never latched");
+        assert_eq!(bmu.peek(CMU_COMMS_HEALTHY, 1), 1, "cmu_comms_healthy never latched");
+        assert_eq!(bmu.peek(CMU_VALID, 1), 1, "cmu_valid never latched");
     }
 
     #[test]
