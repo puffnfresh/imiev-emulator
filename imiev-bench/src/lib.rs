@@ -262,15 +262,26 @@ impl Simulation {
     }
 }
 
-const ETACS_STATUS_ID: u16 = 0x412;
-const ETACS_IGNITION_ON: u8 = 0x04;
+const CHASSIS_FRAMES: &[(u16, [u8; 8])] = &[
+    (0x412, [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x06]), // ignition status + speed (b1 = km/h)
+    (0x424, [0x43, 0x00, 0x0C, 0x00, 0xCF, 0x94, 0x03, 0xFF]), // ETACS lights/locks
+    (0x231, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // brake switch (b4 = 0, released)
+    (0x200, [0x00, 0x03, 0xC0, 0x00, 0xC0, 0x00, 0xFF, 0xFF]),
+    (0x389, [0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40]),
+    (0x3a4, [0x0D, 0x90, 0x5E, 0x79, 0x58, 0x30, 0x00, 0x5E]),
+    (0x285, [0, 0, 0, 0, 0, 0, 0, 0]), // EV-ECU acceleration command (idle)
+    (0x286, [0, 0, 0, 0, 0, 0, 0, 0]), // EV-ECU secondary command
+    (0x5a1, [0, 0, 0, 0, 0, 0, 0, 0]), // diagnostic-status mailboxes
+    (0x565, [0, 0, 0, 0, 0, 0, 0, 0]),
+    (0x564, [0, 0, 0, 0, 0, 0, 0, 0]),
+];
 
 #[derive(Default)]
 pub struct Vehicle;
 
 impl BusSource for Vehicle {
     fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
-        vec![frame(ETACS_STATUS_ID, &[ETACS_IGNITION_ON, 0, 0, 0, 0, 0, 0, 0])]
+        CHASSIS_FRAMES.iter().map(|&(id, data)| frame(id, &data)).collect()
     }
 }
 
@@ -303,7 +314,7 @@ impl BusSource for Inverter {
         let [wh, wl] = INV_STANDSTILL.to_be_bytes();
         let mut out = vec![
             frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, INV_DCLINK_PRECHARGE_HALF, 0x00, 0x11, 0x10]),
-            frame(INV_TORQUE_ID, &[0x40, 0x40, 0x40, 0x40, 0x40, 0x40, wh, wl]),
+            frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
         ];
         for id in INV_GATE_IDS {
             out.push(frame(id, &[INV_GATE_ID_WORD[0], INV_GATE_ID_WORD[1], 0, 0, 0, 0, 0, 0]));
@@ -804,5 +815,22 @@ mod tests {
             OP_MODE_SHUTDOWN,
             "ECU fell into SHUTDOWN during precharge"
         );
+    }
+
+    #[test]
+    fn imiev_ev_ecu_reaches_ready() {
+        const MODE_SUBSTATE: u32 = 0x0080_e590; // dispatcher verdict: 3 = READY
+        const DATA_VALID_LATCH: u32 = 0x0080_d81e;
+        const DRIVE_STATE_READY: u32 = 0x0080_d5a5;
+        const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 6 = HV-active
+        const OP_MODE_READY: u32 = 3;
+        let mut sim = Simulation::imiev();
+        sim.run(15_000_000);
+        let e = sim.ev_ecu().system();
+        assert_eq!(e.peek(DATA_VALID_LATCH, 1), 1, "data_valid never latched");
+        assert_eq!(e.peek(DRIVE_STATE_READY, 1), 1, "drive_state_ready never debounced high");
+        assert_eq!(e.peek(MODE_SUBSTATE, 1), OP_MODE_READY, "dispatcher did not declare READY");
+        assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_READY, "operating_mode did not reach READY");
+        assert_eq!(e.peek(PRECHARGE_MASTER_STATE, 1), 6, "precharge master did not reach HV-active");
     }
 }

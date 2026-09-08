@@ -177,9 +177,9 @@ impl Machine {
 
     fn write(&mut self, a: u32, size: u32, v: u32) {
         if let Some((lo, hi)) = self.wwatch {
-            if a <= hi && a + size.saturating_sub(1) >= lo {
-                let pc = self.cur_pc;
-                self.wwatch_hits.push((pc, a, v));
+            let overlaps = a <= hi && a + size.saturating_sub(1) >= lo;
+            if overlaps {
+                self.wwatch_hits.push((self.cur_pc, a, v));
             }
         }
         for dev in self.devices() {
