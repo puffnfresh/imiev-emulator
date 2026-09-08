@@ -328,7 +328,7 @@ impl BusSource for Inverter {
 }
 
 const CMU_BOARDS: u16 = 12; // twelve CMU boards in the i-MiEV pack
-const CMU_CELLS: [u16; 4] = [1, 3, 5, 7]; // odd cell index carried per report frame
+const CELLS_PER_BOARD: [u16; CMU_BOARDS as usize] = [8, 8, 8, 8, 8, 4, 8, 8, 8, 8, 8, 4];
 const CMU_RX_SLOT: u32 = 30; // BMU pack-bus mailbox the CMU poll reprograms
 const CELL_V_OFFSET_MV: i32 = 2100; // report raw = (cell mV − 2100) / 5  ⇔ (V−2.1)×200
 const CELL_V_STEP_MV: i32 = 5;
@@ -347,11 +347,14 @@ impl Cmu {
     }
 
     fn report(&self) -> (u16, [u8; 8]) {
-        let idx = self.next % (CMU_BOARDS as usize * CMU_CELLS.len());
-        let board = (idx / CMU_CELLS.len()) as u16 + 1;
-        let cell = CMU_CELLS[idx % CMU_CELLS.len()];
-        let sid = 0x600 | (board << 4) | cell;
-
+        let total: usize = CELLS_PER_BOARD.iter().map(|&c| (c / 2) as usize).sum();
+        let mut i = self.next % total;
+        let mut board = 0u16;
+        while i >= (CELLS_PER_BOARD[board as usize] / 2) as usize {
+            i -= (CELLS_PER_BOARD[board as usize] / 2) as usize;
+            board += 1;
+        }
+        let sid = 0x600 | ((board + 1) << 4) | (i as u16 + 1);
         let raw = ((self.cell_mv as i32 - CELL_V_OFFSET_MV) / CELL_V_STEP_MV).clamp(0, 0xffff) as u16;
         let [vh, vl] = raw.to_be_bytes();
         let temp = (self.temp_c as i16 + TEMP_C_BIAS) as u8;
@@ -546,9 +549,7 @@ const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question fram
 pub struct Ic2Companion {
     armed_watch: bool,
     question_sent: bool,
-    hb: u32,       // post-POST heartbeat tick; schedules the watchdog kicks on a 1/6 rotation
-    kick11: bool,  // an unsolicited [0x11] status kick is queued (resets isotp_tx_timer_a)
-    kick33: bool,  // an unsolicited [0x33] self-test kick is queued (resets adc_watchdog_count_b)
+    arm_ctr: u32,
 }
 
 impl Ic2Companion {
@@ -602,34 +603,28 @@ impl Part for Ic2Companion {
         if chip.ic2_rx_pending() {
             return; // previous frame not yet consumed by DMA5
         }
-        let post_post = chip.peek(IC2_STARTUP_STATE, 2) == 0xffff;
-        if post_post {
-            self.hb = self.hb.wrapping_add(1);
-            if self.hb.is_multiple_of(6) {
-                self.kick33 = true;
-            } else if self.hb % 6 == 3 {
-                self.kick11 = true;
-            }
-        }
         if !chip.ic2_rx_armed() {
             return;
+        }
+        if chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
+            self.arm_ctr = self.arm_ctr.wrapping_add(1);
+            if self.arm_ctr % 64 == 32 {
+                chip.ic2_take_rx_armed();
+                chip.ic2_answer(&Self::framed([0x11, 0x00, 0x00, 0x00]));
+                return;
+            }
+            if self.arm_ctr.is_multiple_of(64) {
+                chip.ic2_take_rx_armed();
+                let ctr = chip.peek(0x0080_8293, 1) as u8;
+                chip.ic2_answer(&Self::framed([0x33, 0x00, ctr, 0xAA]));
+                return;
+            }
         }
         if self.question_sent {
             self.question_sent = false;
             chip.ic2_take_rx_armed();
             let frame = Self::reply(chip);
             chip.ic2_answer(&frame);
-            return;
-        }
-        if self.kick33 {
-            self.kick33 = false;
-            chip.ic2_take_rx_armed();
-            let ctr = chip.peek(0x0080_8293, 1) as u8;
-            chip.ic2_answer(&Self::framed([0x33, 0x00, ctr, 0xAA]));
-        } else if self.kick11 {
-            self.kick11 = false;
-            chip.ic2_take_rx_armed();
-            chip.ic2_answer(&Self::framed([0x11, 0x00, 0x00, 0x00]));
         }
     }
 }
