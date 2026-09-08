@@ -171,6 +171,7 @@ impl CanBus {
 pub struct Simulation {
     bmu: Node,
     ev_ecu: Node,
+    driver: DriverControls,
     sources: Vec<Box<dyn BusSource>>,
     bus: CanBus,
     pump_every: u64,
@@ -185,13 +186,13 @@ impl Simulation {
         let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
             .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
-            .with_part(Box::new(DriverControls::default()))
             .with_local_part(Box::new(Ic2Companion::default()))
             .with_local_part(Box::new(Can0RxIsr::default()));
         Simulation {
             bmu,
             ev_ecu,
-            sources: vec![Box::new(Vehicle), Box::new(DcLink), Box::new(Inverter)],
+            driver: DriverControls::default(),
+            sources: vec![Box::new(Vehicle), Box::new(Inverter)],
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
             cycle: 0,
@@ -212,6 +213,14 @@ impl Simulation {
     }
     pub fn ev_ecu_mut(&mut self) -> &mut Node {
         &mut self.ev_ecu
+    }
+
+    pub fn set_gear(&mut self, gear: Gear) {
+        self.driver.gear = gear;
+    }
+
+    pub fn set_pedal(&mut self, pct: f32) {
+        self.driver.pedal_pct = pct.clamp(0.0, 100.0);
     }
 
     pub fn run(&mut self, steps: u64) {
@@ -245,7 +254,7 @@ impl Simulation {
     }
 
     fn pump(&mut self) {
-        let Simulation { bmu, ev_ecu, sources, bus, .. } = self;
+        let Simulation { bmu, ev_ecu, driver, sources, bus, .. } = self;
         let mut tx: Vec<CanFrame> = Vec::new();
         tx.append(&mut bmu.drain_tx());
         tx.append(&mut ev_ecu.drain_tx());
@@ -259,6 +268,7 @@ impl Simulation {
         }
         bmu.update_parts(bus);
         ev_ecu.update_parts(bus);
+        driver.update(ev_ecu.system_mut(), bus);
     }
 }
 
@@ -267,7 +277,6 @@ const CHASSIS_FRAMES: &[(u16, [u8; 8])] = &[
     (0x424, [0x43, 0x00, 0x0C, 0x00, 0xCF, 0x94, 0x03, 0xFF]), // ETACS lights/locks
     (0x231, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // brake switch (b4 = 0, released)
     (0x200, [0x00, 0x03, 0xC0, 0x00, 0xC0, 0x00, 0xFF, 0xFF]),
-    (0x389, [0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40]),
     (0x3a4, [0x0D, 0x90, 0x5E, 0x79, 0x58, 0x30, 0x00, 0x5E]),
     (0x285, [0, 0, 0, 0, 0, 0, 0, 0]), // EV-ECU acceleration command (idle)
     (0x286, [0, 0, 0, 0, 0, 0, 0, 0]), // EV-ECU secondary command
@@ -289,31 +298,26 @@ const EV_ECU_DISPATCH_JL: u32 = 0x0000_39bc;
 const EV_ECU_DISPATCH_JL_RET: u32 = 0x0000_39c0;
 const EV_ECU_CAN0_RX_ISR: u32 = 0x0002_7d40;
 
-const DC_LINK_ID: u16 = 0x236;
-const DC_LINK_CHARGED: [u8; 8] = [0x12, 0xf8, 0, 0, 0, 0, 0, 0];
-
-pub struct DcLink;
-
-impl BusSource for DcLink {
-    fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
-        vec![frame(DC_LINK_ID, &DC_LINK_CHARGED)]
-    }
-}
-
 const INV_RPM_ID: u16 = 0x288; // b0:b1 const 0x07D0, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
 const INV_TORQUE_ID: u16 = 0x298;
 const INV_STANDSTILL: u16 = 10_000; // rpm word for 0 rpm
 const INV_DCLINK_PRECHARGE_HALF: u8 = 39; // 78 V / 2, the inverter's reported DC-link during precharge
 const INV_GATE_IDS: [u16; 3] = [0x100, 0x110, 0x111]; // gate-driver identity frames
 const INV_GATE_ID_WORD: [u8; 2] = [0x01, 0x01]; // matches the ECU's expected_id_a
+const ECU_GEAR_ID: u16 = 0x418; // the ECU re-broadcasts the selected gear here
+const INV_STATUS_PARK: (u8, u8) = (0x11, 0x10); // 0x288 b6:b7 — inverter idle/ready in Park
+const INV_STATUS_DRIVE: (u8, u8) = (0x1f, 0x1c); // b6:b7 — gate drivers enabled, drive-engaged
 
 pub struct Inverter;
 
 impl BusSource for Inverter {
-    fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
+    fn frames(&mut self, bus: &CanBus) -> Vec<CanFrame> {
         let [wh, wl] = INV_STANDSTILL.to_be_bytes();
+        let gear418 = bus.last(ECU_GEAR_ID).map(|f| f.data[0]).unwrap_or(0);
+        let drive_gear = matches!(gear418, 0x44 | 0x52 | 0x42 | 0x43); // D | R | B | C
+        let (b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
         let mut out = vec![
-            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, INV_DCLINK_PRECHARGE_HALF, 0x00, 0x11, 0x10]),
+            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, INV_DCLINK_PRECHARGE_HALF, 0x00, b6, b7]),
             frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
         ];
         for id in INV_GATE_IDS {
@@ -484,14 +488,18 @@ impl Gear {
     }
 }
 
+const APS_RELEASED_RAW: u16 = 0x0c0;
+const APS_FULL_RAW: u16 = 0x600;
+
 pub struct DriverControls {
     pub gear: Gear,
     pub key_on: bool,
+    pub pedal_pct: f32, // accelerator 0..100 %
 }
 
 impl Default for DriverControls {
     fn default() -> Self {
-        DriverControls { gear: Gear::Park, key_on: true }
+        DriverControls { gear: Gear::Park, key_on: true, pedal_pct: 0.0 }
     }
 }
 
@@ -505,6 +513,11 @@ impl Part for DriverControls {
         chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));
         chip.set_gpio_input(P1_KEY_PORT, P1_KEY_BIT, key(P1_KEY_BIT));
         chip.set_gpio_input(CHARGE_DETECT_PORT, CHARGE_DETECT_BIT, 0); // cable unplugged, contactor open
+        // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.
+        let span = (APS_FULL_RAW - APS_RELEASED_RAW) as f32;
+        let main = APS_RELEASED_RAW + (self.pedal_pct.clamp(0.0, 100.0) / 100.0 * span) as u16;
+        chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_1_SIGNAL, main);
+        chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_2_SIGNAL, main / 2);
     }
 }
 
