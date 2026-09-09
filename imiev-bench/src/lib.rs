@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn imiev_bmu_broadcasts_full_battery_frame_set() {
         let mut sim = Simulation::imiev();
-        sim.run(13_000_000);
+        sim.run(45_000_000);
         for id in [0x373u16, 0x374, 0x375] {
             let f = sim
                 .bus()
@@ -749,7 +749,7 @@ mod tests {
         const CMU_COMMS_HEALTHY: u32 = 0x0080_d6be;
         const CMU_VALID: u32 = 0x0080_befa;
         let mut sim = Simulation::imiev();
-        sim.run(13_000_000);
+        sim.run(45_000_000);
         let bmu = sim.bmu().system();
         assert_eq!(bmu.peek(VALIDITY_FLAG9, 1), 1, "sensor validity gate never latched");
         assert_eq!(bmu.peek(CMU_DATA_VALID, 1), 1, "cmu_data_valid never latched");
@@ -833,7 +833,7 @@ mod tests {
         const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 6 = HV-active
         const OP_MODE_READY: u32 = 3;
         let mut sim = Simulation::imiev();
-        sim.run(15_000_000);
+        sim.run(75_000_000);
         let e = sim.ev_ecu().system();
         assert_eq!(e.peek(DATA_VALID_LATCH, 1), 1, "data_valid never latched");
         assert_eq!(e.peek(DRIVE_STATE_READY, 1), 1, "drive_state_ready never debounced high");

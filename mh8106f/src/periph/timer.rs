@@ -156,7 +156,7 @@ impl Timer {
         if !self.is_enabled() {
             return None;
         }
-        let div = self.prescale_div();
+        let div = self.prescale_div() * 16;
         self.prescale_accum += cycles as u32;
         let mut fired = None;
         while self.prescale_accum >= div {
@@ -191,7 +191,7 @@ impl Peripheral for Timer {
             TOPCEN => self.topcen as u32,
             _ if is_freerun_counter(a) => {
                 let raw = if is_tms_counter(a) {
-                    self.cycles / (self.prs0 as u64 + 1)
+                    self.cycles / (16 * (self.prs0 as u64 + 1))
                 } else {
                     self.cycles
                 };
@@ -249,16 +249,17 @@ mod tests {
         t.write(TOP0CT, 2, 5);
         t.write(TOPCEN, 2, 1); // arm
 
+        let count = 40 * 16;
         let mut fires = 0u32;
         let mut first_fire_at = None;
-        for c in 1..=(6 * 40) {
+        for c in 1..=(6 * count) {
             if t.advance(1) == Some(TICK_IVECT) {
                 fires += 1;
                 first_fire_at.get_or_insert(c);
             }
         }
         assert_eq!(fires, 1, "exactly one tick in the first period");
-        assert_eq!(first_fire_at, Some(6 * 40));
+        assert_eq!(first_fire_at, Some(6 * count));
     }
 
     #[test]
@@ -318,22 +319,20 @@ mod tests {
     fn tms_counter_is_prescaled_by_prs0() {
         let mut t = Timer::new();
         t.write(PRS0, 1, 39); // clock bus 0 = BCLK/PRS0; ÷40, as timer_tio3_init sets it
-        t.advance(4000);
-        // TMS1CT (0x8003d0) counts clock bus 0, so it advances once per (PRS0+1)=40 cycles.
-        // Fixed-interval firmware timing (IC2 poll = TMS1CT + 0x2ee) depends on this rate.
+        t.advance(64000);
         assert_eq!(t.read(0x8003d0, 2), 100);
         // A plain free-running channel (TIO0) still reads raw elapsed cycles.
-        assert_eq!(t.read(0x800300, 4), 4000);
+        assert_eq!(t.read(0x800300, 4), 64000);
     }
 
     #[test]
     fn top0ct_reads_back_live_count() {
         let mut t = Timer::new();
-        t.write(PRS0, 1, 0); // div 1: one decrement per cycle
+        t.write(PRS0, 1, 0); // div 1: one decrement per MJT count (fCPU/16 = one per 16 cycles)
         t.write(TOP0RL, 2, 100);
         t.write(TOP0CT, 2, 100);
         t.write(TOPCEN, 2, 1);
-        t.advance(10);
+        t.advance(160); // 160 cycles / 16 = 10 counts
         assert_eq!(t.read(TOP0CT, 2), 90);
     }
 }
