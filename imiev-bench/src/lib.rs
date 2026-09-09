@@ -173,6 +173,7 @@ pub struct Simulation {
     ev_ecu: Node,
     driver: DriverControls,
     sources: Vec<Box<dyn BusSource>>,
+    inverter: Inverter,
     bus: CanBus,
     pump_every: u64,
     cycle: u64,
@@ -192,7 +193,8 @@ impl Simulation {
             bmu,
             ev_ecu,
             driver: DriverControls::default(),
-            sources: vec![Box::new(Vehicle), Box::new(Inverter)],
+            sources: vec![Box::new(Vehicle)],
+            inverter: Inverter::default(),
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
             cycle: 0,
@@ -254,13 +256,19 @@ impl Simulation {
     }
 
     fn pump(&mut self) {
-        let Simulation { bmu, ev_ecu, driver, sources, bus, .. } = self;
+        let Simulation { bmu, ev_ecu, driver, sources, inverter, bus, .. } = self;
         let mut tx: Vec<CanFrame> = Vec::new();
         tx.append(&mut bmu.drain_tx());
         tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
         }
+        let ecu = ev_ecu.system();
+        let code = ecu.peek(ECU_MODE_STATUS_CODE, 1);
+        let op_mode = ecu.peek(EV_ECU_OPERATING_MODE, 1);
+        inverter.drive_dclink = code >= 4 || op_mode >= 4;
+        inverter.engaging = code >= 4 && op_mode < 4;
+        tx.extend(inverter.frames(bus));
         for f in &tx {
             bus.record(*f);
             bmu.deliver(f);
@@ -302,22 +310,35 @@ const INV_RPM_ID: u16 = 0x288; // b0:b1 const 0x07D0, b2:b3 rpm+10000, b4 DC-lin
 const INV_TORQUE_ID: u16 = 0x298;
 const INV_STANDSTILL: u16 = 10_000; // rpm word for 0 rpm
 const INV_DCLINK_PRECHARGE_HALF: u8 = 39; // 78 V / 2, the inverter's reported DC-link during precharge
+const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
 const INV_GATE_IDS: [u16; 3] = [0x100, 0x110, 0x111]; // gate-driver identity frames
 const INV_GATE_ID_WORD: [u8; 2] = [0x01, 0x01]; // matches the ECU's expected_id_a
 const ECU_GEAR_ID: u16 = 0x418; // the ECU re-broadcasts the selected gear here
+const ECU_MODE_STATUS_CODE: u32 = 0x0080_e595; // drive-engagement handshake stage (climbs to 4 then 5)
+const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
 const INV_STATUS_PARK: (u8, u8) = (0x11, 0x10); // 0x288 b6:b7 — inverter idle/ready in Park
 const INV_STATUS_DRIVE: (u8, u8) = (0x1f, 0x1c); // b6:b7 — gate drivers enabled, drive-engaged
 
-pub struct Inverter;
+const INV_STATUS_SETTLED_BIT: u8 = 0x10; // 0x288 b6 bit4: inverter status "settled" (steady park or drive)
 
-impl BusSource for Inverter {
-    fn frames(&mut self, bus: &CanBus) -> Vec<CanFrame> {
+#[derive(Default)]
+pub struct Inverter {
+    drive_dclink: bool,
+    engaging: bool,
+}
+
+impl Inverter {
+    fn frames(&self, bus: &CanBus) -> Vec<CanFrame> {
         let [wh, wl] = INV_STANDSTILL.to_be_bytes();
         let gear418 = bus.last(ECU_GEAR_ID).map(|f| f.data[0]).unwrap_or(0);
         let drive_gear = matches!(gear418, 0x44 | 0x52 | 0x42 | 0x43); // D | R | B | C
-        let (b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
+        let (mut b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
+        if self.engaging {
+            b6 &= !INV_STATUS_SETTLED_BIT;
+        }
+        let dclink = if self.drive_dclink { INV_DCLINK_PACK_HALF } else { INV_DCLINK_PRECHARGE_HALF };
         let mut out = vec![
-            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, INV_DCLINK_PRECHARGE_HALF, 0x00, b6, b7]),
+            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, dclink, 0x00, b6, b7]),
             frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
         ];
         for id in INV_GATE_IDS {
@@ -840,5 +861,16 @@ mod tests {
         assert_eq!(e.peek(MODE_SUBSTATE, 1), OP_MODE_READY, "dispatcher did not declare READY");
         assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_READY, "operating_mode did not reach READY");
         assert_eq!(e.peek(PRECHARGE_MASTER_STATE, 1), 6, "precharge master did not reach HV-active");
+    }
+
+    #[test]
+    fn imiev_ev_ecu_reaches_and_holds_drive() {
+        const OP_MODE_DRIVE: u32 = 4;
+        const DTC_P1B2C_FLAG: u32 = 0x0080_4abc; // 0x82 when the stuck-before-drive watchdog confirms
+        let mut sim = Simulation::imiev();
+        sim.run(250_000_000);
+        let e = sim.ev_ecu().system();
+        assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_DRIVE, "operating_mode did not reach DRIVE");
+        assert_ne!(e.peek(DTC_P1B2C_FLAG, 1), 0x82, "P1B2C stuck-before-drive watchdog confirmed");
     }
 }
