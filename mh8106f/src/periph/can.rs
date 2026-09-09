@@ -226,7 +226,7 @@ mod tests {
 
         // A bus frame for a SID no mailbox wants is dropped.
         assert_eq!(can.deliver_rx(0x321, &[1, 2, 3]), None);
-        // The 0x412 frame lands in mailbox 15 by acceptance matching — no slot given.
+        // The 0x412 frame lands in mailbox 15 by acceptance matching - no slot given.
         assert_eq!(can.deliver_rx(0x412, &[0xaa, 0xbb]), Some(0x0000));
         let s0r = can.read(slot_field(base, slot, SLOT_SID0), 1) as u8;
         let s1r = can.read(slot_field(base, slot, SLOT_SID1), 1) as u8;

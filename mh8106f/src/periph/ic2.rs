@@ -1,7 +1,7 @@
 //! IC2 companion-chip serial link
 //!
 //! The EV-ECU talks to its 20-pin "System LSI" safety companion (IC2) over this
-//! link as a question/answer watchdog — POST does not complete until IC2 answers.
+//! link as a question/answer watchdog.
 
 use super::Peripheral;
 

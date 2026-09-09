@@ -32,7 +32,7 @@ pub const PRS2: u32 = 0x0080_0204; // prescaler 2 (feeds clock bus 2)
 pub const TOP05CR0: u32 = 0x0080_029a; // TOP0-5 Control Register 0 (halfword); TOP05CKS = low 2 bits
 pub const TOPPRO: u32 = 0x0080_02fc; // per-channel enable-protect (bit N protects TOPCEN bit N)
 pub const TOPCEN: u32 = 0x0080_02fe; // per-channel count enable (bit N = TOP channel N)
-const TOP0_EN: u16 = 1 << 0; // TOP0CEN — the scheduler tick channel
+const TOP0_EN: u16 = 1 << 0; // TOP0CEN - the scheduler tick channel
 const TOP05CKS_MASK: u16 = 0x3; // TOP0-5 clock source select: 0=bus0/PRS0 1=bus1/PRS1 2=bus2/PRS2
 
 /// A group of MJT counter registers of one sub-unit: channel `ch`'s counter is at
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn tms_counter_is_prescaled_by_prs0() {
         let mut t = Timer::new();
-        t.write(PRS0, 1, 39); // clock bus 0 = BCLK/PRS0; ÷40, as timer_tio3_init sets it
+        t.write(PRS0, 1, 39); // clock bus 0 = BCLK/PRS0; /40, as timer_tio3_init sets it
         t.advance(64000);
         assert_eq!(t.read(0x8003d0, 2), 100);
         // A plain free-running channel (TIO0) still reads raw elapsed cycles.
