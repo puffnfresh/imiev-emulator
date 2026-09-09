@@ -81,6 +81,18 @@ fn imiev_bmu_broadcasts_full_battery_frame_set() {
 }
 
 #[test]
+fn imiev_bmu_nvm_clears_p1a51() {
+    const BMU_DTC_P1A51: u32 = 0x0080_4900; // fault-flag idx 0; bit1 = confirmed
+    let mut sim = Simulation::imiev();
+    sim.run(45_000_000);
+    assert_eq!(
+        sim.bmu().system().peek(BMU_DTC_P1A51, 1) & 0x02,
+        0,
+        "P1A51 confirmed — the BMU EEPROM NVM check failed"
+    );
+}
+
+#[test]
 fn imiev_bmu_records_cmu_cell_voltage() {
     const CELL_V: u32 = 0x0080_7f37; // board array entry 0, cell voltage (BE, raw)
     let mut sim = Simulation::imiev();

@@ -44,17 +44,25 @@ impl Gear {
 
 const APS_RELEASED_RAW: u16 = 0x0c0;
 const APS_FULL_RAW: u16 = 0x600;
+const BPS_RELEASED_RAW: u16 = 0x130; // brake-stroke sensor, pedal up (~1.5 V)
+const BPS_FULL_RAW: u16 = 0x600; // brake-stroke sensor, pedal fully pressed
 
 pub struct DriverControls {
     pub gear: Gear,
     pub key_on: bool,
     pub pedal_pct: f32, // accelerator 0..100 %
+    pub brake_pct: f32, // brake 0..100 %
 }
 
 impl Default for DriverControls {
     fn default() -> Self {
-        DriverControls { gear: Gear::Park, key_on: true, pedal_pct: 0.0 }
+        DriverControls { gear: Gear::Park, key_on: true, pedal_pct: 0.0, brake_pct: 0.0 }
     }
+}
+
+fn pedal_raw(pct: f32, released: u16, full: u16) -> u16 {
+    let span = (full - released) as f32;
+    released + (pct.clamp(0.0, 100.0) / 100.0 * span) as u16
 }
 
 impl Part for DriverControls {
@@ -68,9 +76,10 @@ impl Part for DriverControls {
         chip.set_gpio_input(P1_KEY_PORT, P1_KEY_BIT, key(P1_KEY_BIT));
         chip.set_gpio_input(CHARGE_DETECT_PORT, CHARGE_DETECT_BIT, 0); // cable unplugged, contactor open
         // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.
-        let span = (APS_FULL_RAW - APS_RELEASED_RAW) as f32;
-        let main = APS_RELEASED_RAW + (self.pedal_pct.clamp(0.0, 100.0) / 100.0 * span) as u16;
+        let main = pedal_raw(self.pedal_pct, APS_RELEASED_RAW, APS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_1_SIGNAL, main);
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_2_SIGNAL, main / 2);
+        let brake = pedal_raw(self.brake_pct, BPS_RELEASED_RAW, BPS_FULL_RAW);
+        chip.adc_mut().set_channel(ev_ecu_adc::BRAKE_SIGNAL, brake);
     }
 }

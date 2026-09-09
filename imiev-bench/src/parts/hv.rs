@@ -5,24 +5,39 @@ use mh8106f::System;
 use crate::adc::ev_ecu_adc;
 use crate::{CanBus, Part};
 
-const CNTP_FB_PORT: u32 = 0x0080_0703; // P3DATA b1 = main-contactor "closed" (CNTP)
+const COIL_PORT: u32 = 0x0080_0701; // P1DATA - contactor coil-command outputs
+const AUX_SENSE_PORT: u32 = 0x0080_0703; // P3DATA - contactor auxiliary-contact sense inputs
 const PRECHARGE_FB_PORT: u32 = 0x0080_0709; // P9DATA b1 = precharge-complete
 const CONTACTOR_FB_BIT: u8 = 0x02; // bit1 on each port
 
-pub struct Contactor {
-    pub closed: bool,
-}
+const MAIN_AUX_MASK: u8 = 0x0c; // P3 bits 2,3
 
-impl Default for Contactor {
-    fn default() -> Self {
-        Contactor { closed: true }
-    }
+#[derive(Default)]
+pub struct Contactor;
+
+fn main_aux_sense(coils: u8) -> u8 {
+    (((coils >> 6) & 1) << 2) | (((coils >> 7) & 1) << 3)
 }
 
 impl Part for Contactor {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        let level = if self.closed { CONTACTOR_FB_BIT } else { 0 };
-        chip.set_gpio_input(CNTP_FB_PORT, CONTACTOR_FB_BIT, level);
+        let sense = main_aux_sense(chip.gpio_output(COIL_PORT));
+        chip.set_gpio_input(AUX_SENSE_PORT, MAIN_AUX_MASK, sense);
+    }
+}
+
+const AC_RELAY_CMD: u32 = 0x0080_e893; // firmware's A/C-compressor relay command variable
+const AC_RELAY_FB_PORT: u32 = 0x0080_070d; // P13DATA b6 = A/C relay feedback
+const AC_RELAY_FB_BIT: u8 = 0x40;
+
+#[derive(Default)]
+pub struct AcRelay;
+
+impl Part for AcRelay {
+    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        let commanded = chip.peek(AC_RELAY_CMD, 1) != 0;
+        let fb = if commanded { AC_RELAY_FB_BIT } else { 0 };
+        chip.set_gpio_input(AC_RELAY_FB_PORT, AC_RELAY_FB_BIT, fb);
     }
 }
 
@@ -89,10 +104,24 @@ mod tests {
     use crate::EV_ECU_FW;
 
     #[test]
-    fn contactor_presents_closed_feedback_to_the_ecu() {
+    fn contactor_aux_sense_follows_coil_commands() {
+        // No coils: no main aux-sense bits. Both main coils (P1.6/P1.7): both senses follow.
+        assert_eq!(main_aux_sense(0x00), 0x00);
+        assert_eq!(main_aux_sense(0xc0), MAIN_AUX_MASK);
+        assert_eq!(main_aux_sense(0x40), 0x04); // CNT- only -> P3.2
+        assert_eq!(main_aux_sense(0x80), 0x08); // CNT+ only -> P3.3
+        // A fresh ECU commands no main coils, so the part asserts no aux-sense.
         let mut ecu = System::new(EV_ECU_FW);
-        Contactor::default().update(&mut ecu, &CanBus::default());
-        assert_eq!(ecu.gpio_level(CNTP_FB_PORT) & CONTACTOR_FB_BIT, CONTACTOR_FB_BIT);
+        Contactor.update(&mut ecu, &CanBus::default());
+        assert_eq!(ecu.gpio_level(AUX_SENSE_PORT) & MAIN_AUX_MASK, 0);
+    }
+
+    #[test]
+    fn ac_relay_feedback_tracks_the_command() {
+        let mut ecu = System::new(EV_ECU_FW);
+        AcRelay.update(&mut ecu, &CanBus::default());
+        // Command off at reset: feedback low.
+        assert_eq!(ecu.gpio_level(AC_RELAY_FB_PORT) & AC_RELAY_FB_BIT, 0);
     }
 
     #[test]

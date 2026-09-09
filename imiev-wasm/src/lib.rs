@@ -55,6 +55,10 @@ impl Sim {
         self.inner.set_pedal(pct);
     }
 
+    pub fn set_brake(&mut self, pct: f32) {
+        self.inner.set_brake(pct);
+    }
+
     pub fn set_adc_bmu(&mut self, ch: u32, raw12: u16) {
         self.inner.bmu_mut().set_adc(ch as usize, raw12);
     }

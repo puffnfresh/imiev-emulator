@@ -23,6 +23,7 @@ pub(crate) mod ev_ecu_adc {
     pub const VACUUM_SUPPLY: usize = 4; // brake-booster vacuum sensor 5V supply
     pub const ACCEL_2_SIGNAL: usize = 5; // accelerator sensor 2 (sub) signal
     pub const VACUUM_OUTPUT: usize = 6; // brake-booster vacuum sensor output
+    pub const COOLANT_TEMP: usize = 8; // motor/inverter coolant temperature (NTC)
     pub const ACCEL_1_SUPPLY: usize = 10; // accelerator sensor 1 (main) 5V supply
     pub const ACCEL_2_SUPPLY: usize = 11; // accelerator sensor 2 (sub) 5V supply
     pub const CHARGE_PORT: usize = 12; // charge-port connection sense
@@ -46,6 +47,7 @@ pub(crate) const EV_ECU_BOOT_ADC: &[(usize, u16)] = &[
     (ev_ecu_adc::VACUUM_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::ACCEL_2_SIGNAL, 0x060),  // released accelerator, sub (~1/2 of main)
     (ev_ecu_adc::VACUUM_OUTPUT, 0x200),   // mid-range vacuum reading (~2.5V)
+    (ev_ecu_adc::COOLANT_TEMP, 0x200),    // ~mid-range coolant temp (in-range; avoids P00B3/P00B4)
     (ev_ecu_adc::ACCEL_1_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::ACCEL_2_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::CHARGE_PORT, 0x380),     // charge port disconnected
