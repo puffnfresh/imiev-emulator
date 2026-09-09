@@ -12,6 +12,8 @@
       let pkgs = nixpkgs.legacyPackages."${system}"; in rec {
         default = pkgs.callPackage ./nix/workspace.nix { };
 
+        imiev-wasm = pkgs.callPackage ./nix/wasm.nix { };
+
         ghidra-m32r = pkgs.callPackage ./nix/ghidra-m32r.nix {
           inherit imiev-hacking-tools;
         };

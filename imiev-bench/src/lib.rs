@@ -186,6 +186,14 @@ impl Simulation {
         self.driver.pedal_pct = pct.clamp(0.0, 100.0);
     }
 
+    pub fn ecu_op_mode(&self) -> u32 {
+        self.ev_ecu.system().peek(EV_ECU_OPERATING_MODE, 1)
+    }
+
+    pub fn ecu_mode_code(&self) -> u32 {
+        self.ev_ecu.system().peek(ECU_MODE_STATUS_CODE, 1)
+    }
+
     pub fn run(&mut self, steps: u64) {
         for _ in 0..steps {
             {

@@ -1,0 +1,12 @@
+[package]
+name = "imiev-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+imiev-bench = { path = "../imiev-bench" }
+wasm-bindgen = "=0.2.121"
