@@ -130,6 +130,12 @@ impl Machine {
         0
     }
 
+    pub(crate) fn nvm_clear_bits(&mut self, addr: u32, mask: u8) {
+        if let Some(off) = self.ram_off(addr) {
+            self.ram[off] &= !mask;
+        }
+    }
+
     fn devices(&mut self) -> [&mut dyn Peripheral; 7] {
         [
             &mut self.timer,

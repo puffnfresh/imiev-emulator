@@ -162,3 +162,52 @@ fn imiev_ev_ecu_reaches_and_holds_drive() {
     assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_DRIVE, "operating_mode did not reach DRIVE");
     assert_ne!(e.peek(DTC_P1B2C_FLAG, 1), 0x82, "P1B2C stuck-before-drive watchdog confirmed");
 }
+
+#[test]
+fn imiev_nvm_selftest_does_not_confirm_p060b() {
+    const DTC_P060B: u32 = 0x0080_4a48; // fault-flag idx 72; bit1 = confirmed
+    let mut sim = Simulation::imiev();
+    sim.run(400_000_000); // well past where P060B confirmed without the done-signal (~350M)
+    assert_eq!(
+        sim.ev_ecu().system().peek(DTC_P060B, 1) & 0x02,
+        0,
+        "P060B (internal-NVM self-test) confirmed — the flash-controller done-signal is not modeled"
+    );
+}
+
+#[test]
+fn imiev_full_throttle_holds_without_aps_overrange() {
+    const DTC_P2123: u32 = 0x0080_4a03; // fault-flag idx 3; bit1 = confirmed
+    const DTC_P2128: u32 = 0x0080_4a06; // fault-flag idx 6
+    let mut sim = Simulation::imiev();
+    sim.run(250_000_000);
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(100.0);
+    sim.run(130_000_000); // well past the APS over-range debounce
+    let e = sim.ev_ecu().system();
+    assert_eq!(e.peek(DTC_P2123, 1) & 0x02, 0, "P2123 (APS1 over-range) confirmed at full throttle");
+    assert_eq!(e.peek(DTC_P2128, 1) & 0x02, 0, "P2128 (APS2 over-range) confirmed at full throttle");
+}
+
+#[test]
+fn imiev_selecting_drive_engages_and_moves() {
+    const OP_MODE_DRIVE: u32 = 4;
+    let mut sim = Simulation::imiev();
+    sim.run(250_000_000);
+    assert_eq!(
+        sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1),
+        OP_MODE_DRIVE,
+        "never reached DRIVE to test motion"
+    );
+    let kmh0 = sim.bus().last(0x412).map(|f| f.data[1]).unwrap_or(0);
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(60.0);
+    sim.run(20_000_000);
+    assert_eq!(
+        sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1),
+        OP_MODE_DRIVE,
+        "selecting Drive collapsed the operating mode (handshake broke)"
+    );
+    let kmh1 = sim.bus().last(0x412).map(|f| f.data[1]).unwrap_or(0);
+    assert!(kmh1 > kmh0, "vehicle did not accelerate after selecting Drive ({kmh0} -> {kmh1} km/h)");
+}

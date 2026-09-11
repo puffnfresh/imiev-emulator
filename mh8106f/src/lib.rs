@@ -67,6 +67,7 @@ pub struct System {
     can0_jl_pc: u32,     // the dispatcher instruction that JLs to the (unresolved) handler
     can0_jl_return: u32, // where that JL would return (LR for the ISR trampoline)
     can0_isr: u32,       // the CAN0-RX ISR trampoline; 0 = CAN0-RX interrupt not modeled
+    nvm_done: Option<(u32, u32, u8)>, // flash-controller done-signal: (worker pc, status addr, bit mask)
 }
 
 impl System {
@@ -82,7 +83,12 @@ impl System {
             can0_jl_pc: 0,
             can0_jl_return: 0,
             can0_isr: 0,
+            nvm_done: None,
         }
+    }
+
+    pub fn configure_nvm_done_signal(&mut self, worker_pc: u32, status_addr: u32, mask: u8) {
+        self.nvm_done = Some((worker_pc, status_addr, mask));
     }
 
     pub fn configure_can0_rx_isr(&mut self, jl_pc: u32, return_pc: u32, isr: u32) {
@@ -188,6 +194,11 @@ impl System {
         self.mem.cur_pc = self.cpu.pc;
         if self.pc_watch == Some(self.cpu.pc) {
             self.pc_hit = true;
+        }
+        if let Some((worker_pc, addr, mask)) = self.nvm_done {
+            if self.cpu.pc == worker_pc {
+                self.mem.nvm_clear_bits(addr, mask);
+            }
         }
         if self.can0_rx_arm && self.cpu.pc == self.can0_jl_pc {
             self.cpu.r[0] = self.can0_isr;
