@@ -14,6 +14,7 @@ runCommand "imiev-decompilation" { buildInputs = [ ghidra-m32r ]; } ''
       -import $1.bin \
       -processor m32r:2:default \
       -scriptPath ${../ghidra/scripts} \
+      -preScript EnableParamId.java \
       -postScript ApplySymbols.java \
       ${../ghidra/symbols}/$1.txt
 

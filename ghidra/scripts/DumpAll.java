@@ -18,6 +18,10 @@ public class DumpAll extends GhidraScript {
         DecompileOptions opts = new DecompileOptions();
         opts.grabFromProgram(currentProgram);
         opts.setRespectReadOnly(true);
+        opts.setInferConstantPointers(true);   // show address constants as &symbol
+        opts.setEliminateUnreachable(true);    // drop blocks proven dead (e.g. by readonly folding)
+        opts.setSimplifyDoublePrecision(true); // fuse split hi/lo double-word float ops
+        opts.setMaxWidth(120);                  // fewer wrapped lines than the 100-col default
         di.setOptions(opts);
         di.openProgram(currentProgram);
         PrintWriter pw = new PrintWriter(out);
