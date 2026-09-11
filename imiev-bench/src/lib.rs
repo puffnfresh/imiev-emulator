@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use mh8106f::{CanFrame, System};
 
 mod adc;
+pub mod dtc;
 mod parts;
 
 #[cfg(test)]
@@ -202,6 +203,18 @@ impl Simulation {
 
     pub fn ecu_mode_code(&self) -> u32 {
         self.ev_ecu.system().peek(ECU_MODE_STATUS_CODE, 1)
+    }
+
+    pub fn ecu_torque_request(&self) -> i32 {
+        self.ev_ecu.system().peek(ECU_TORQUE_REQUEST, 2) as i16 as i32
+    }
+
+    pub fn ecu_dtcs(&self) -> Vec<(String, bool)> {
+        dtc::scan(self.ev_ecu.system(), &dtc::ECU_DTC)
+    }
+
+    pub fn bmu_dtcs(&self) -> Vec<(String, bool)> {
+        dtc::scan(self.bmu.system(), &dtc::BMU_DTC)
     }
 
     pub fn run(&mut self, steps: u64) {

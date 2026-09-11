@@ -14,6 +14,8 @@
 
         imiev-wasm = pkgs.callPackage ./nix/wasm.nix { };
 
+        site = pkgs.callPackage ./nix/site.nix { inherit imiev-wasm; };
+
         ghidra-m32r = pkgs.callPackage ./nix/ghidra-m32r.nix {
           inherit imiev-hacking-tools;
         };

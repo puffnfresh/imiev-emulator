@@ -100,6 +100,26 @@ impl Sim {
     pub fn ecu_mode_code(&self) -> u32 {
         self.inner.ecu_mode_code()
     }
+
+    pub fn ecu_torque_request(&self) -> i32 {
+        self.inner.ecu_torque_request()
+    }
+
+    pub fn ecu_dtcs(&self) -> Vec<String> {
+        fmt_dtcs(self.inner.ecu_dtcs())
+    }
+
+    pub fn bmu_dtcs(&self) -> Vec<String> {
+        fmt_dtcs(self.inner.bmu_dtcs())
+    }
+}
+
+fn fmt_dtcs(dtcs: Vec<(String, bool)>) -> Vec<String> {
+    dtcs.into_iter()
+        .map(|(code, confirmed)| {
+            format!("{code} ({})", if confirmed { "confirmed" } else { "pending" })
+        })
+        .collect()
 }
 
 impl Default for Sim {
