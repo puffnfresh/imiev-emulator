@@ -23,6 +23,7 @@ runCommand "imiev-decompilation" { buildInputs = [ ghidra-m32r ]; } ''
       -process $1.bin \
       -noanalysis \
       -scriptPath ${../ghidra/scripts} \
+      -preScript MarkRomReadOnly.java \
       -postScript DumpAll.java \
       $out/$1.c
   }

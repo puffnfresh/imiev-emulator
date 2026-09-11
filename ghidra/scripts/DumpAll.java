@@ -3,6 +3,7 @@ import ghidra.app.decompiler.*;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.symbol.SourceType;
 import java.io.PrintWriter;
+import ghidra.app.decompiler.DecompileOptions;
 
 // Decompile every function to a single text file, each prefixed with an
 // address header, so a naming pass can read the whole corpus at once:
@@ -14,6 +15,10 @@ public class DumpAll extends GhidraScript {
         String[] a = getScriptArgs();
         String out = (a.length > 0) ? a[0] : "emulator/ghidra/bmu_decomp_all.txt";
         DecompInterface di = new DecompInterface();
+        DecompileOptions opts = new DecompileOptions();
+        opts.grabFromProgram(currentProgram);
+        opts.setRespectReadOnly(true);
+        di.setOptions(opts);
         di.openProgram(currentProgram);
         PrintWriter pw = new PrintWriter(out);
         int n = 0;
