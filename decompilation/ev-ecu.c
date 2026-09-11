@@ -35456,7 +35456,7 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   DAT_0080df54 = DAT_0080e8d5;
   DAT_0080df55 = DAT_0080e8d6;
   DAT_0080df56 = DAT_0080e8d7;
-  charge_state_code = DAT_0080e7fc;
+  precharge_mode_snapshot = DAT_0080e7fc;
   DAT_0080df57 = DAT_0080e8d8;
   DAT_0080df58 = DAT_0080e8d9;
   diag_status_aggregate_b();
@@ -66023,12 +66023,15 @@ void fault_aggregate_d435(void)
 }
 
 
-//=== 0x0008b824 charge_timer_state_machine [NAMED] (calls=4)
+//=== 0x0008b824 precharge_relay_sequencer [NAMED] (calls=4)
 
 /* WARNING: Type propagation algorithm not settling */
-/* charge-mode sequencer (0x80E62x states, DAT_0080DD68 mode) [conf: med] */
+/* precharge/HV-relay sequencer: drives precharge_relay1/2/3 + precharge_dd68_mode (states
+   0x14/0x15/0x1c/0x1e/0x28) from precharge_cmd_code (set by drive_inhibit_scan_out_a/b +
+   precharge_done_flag). Runs in DRIVE (HV bring-up), not charge-only — the "charge" naming is a
+   misnomer (ex charge_timer_state_machine) [conf: high] */
 
-float charge_timer_state_machine(void)
+float precharge_relay_sequencer(void)
 
 {
   float fVar1;
@@ -66730,7 +66733,7 @@ void battery_model_dispatch(void)
       return;
     }
     if (battmodel_substate == 2) {
-      charge_timer_state_machine();
+      precharge_relay_sequencer();
       return;
     }
   }
@@ -66852,7 +66855,7 @@ void dtc_monitor_condenser(void)
   
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
-  if ((((float)DAT_000e9eb8 * DAT_000e7a34 <= condenser_voltage) || (charge_enable_flag == 0)) ||
+  if ((((float)DAT_000e9eb8 * DAT_000e7a34 <= condenser_voltage) || (hv_transfer_permit == 0)) ||
      (DAT_000ea35d == '\0')) {
     dtc_condenser_cond = 0;
   }
@@ -66945,7 +66948,7 @@ void dtc_monitor_condenser_08d114(void)
   
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
-  if ((((float)DAT_000e9ebd * DAT_000e7a34 <= condenser_voltage) || (charge_enable_flag == 0)) ||
+  if ((((float)DAT_000e9ebd * DAT_000e7a34 <= condenser_voltage) || (hv_transfer_permit == 0)) ||
      (DAT_000ea35e == '\0')) {
     DAT_0080dfca = 0;
   }
@@ -67046,7 +67049,7 @@ void dtc_monitor_c6(void)
   
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
-  if (((condenser_voltage <= (float)DAT_000e9ec2 * DAT_000e7a34) || (charge_enable_flag == 0)) ||
+  if (((condenser_voltage <= (float)DAT_000e9ec2 * DAT_000e7a34) || (hv_transfer_permit == 0)) ||
      (DAT_000ea35f == '\0')) {
     dtcc6_dbnc_in = 0;
   }
@@ -67126,8 +67129,8 @@ void dtc_monitor_ee50(void)
   piVar2 = &monitor_state_base;
   if (((((DAT_0080df54 == '\0') && (charge_relay_flag != 0)) && (DAT_0080df67 != '\0')) &&
       (DAT_000ea361 != '\0')) &&
-     (((charge_state_code <= DAT_000e9f9b || (charge_state_code == DAT_000e9f9e)) ||
-      ((charge_state_code == DAT_000e9f9f || (charge_state_code == DAT_000e9fa0)))))) {
+     (((precharge_mode_snapshot <= DAT_000e9f9b || (precharge_mode_snapshot == DAT_000e9f9e)) ||
+      ((precharge_mode_snapshot == DAT_000e9f9f || (precharge_mode_snapshot == DAT_000e9fa0)))))) {
     dtc_ee50_cond = 1;
   }
   else {
@@ -67227,8 +67230,8 @@ void dtc_monitor_C200E(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((DAT_0080df54 == '\0') && (DAT_0080d5e3 != '\0')) && (charge_enable_flag != 0)) &&
-     ((DAT_000ea363 != '\0' && (charge_state_code == DAT_000e9fa0)))) {
+  if ((((DAT_0080df54 == '\0') && (DAT_0080d5e3 != '\0')) && (hv_transfer_permit != 0)) &&
+     ((DAT_000ea363 != '\0' && (precharge_mode_snapshot == DAT_000e9fa0)))) {
     dtc_C200E_raw = 1;
   }
   else {
@@ -67473,7 +67476,7 @@ void dtc_monitor_C2016(void)
   piVar2 = &monitor_state_base;
   if ((((DAT_0080df55 != '\0') || (DAT_0080df56 != '\0')) ||
       (charge_voltage_cf70 < (float)DAT_000e9ecd * DAT_000e7a34)) ||
-     ((charge_enable_flag == 0 || (DAT_000ea36b == '\0')))) {
+     ((hv_transfer_permit == 0 || (DAT_000ea36b == '\0')))) {
     dtc_C2016_in = 0;
   }
   else {
@@ -67596,7 +67599,7 @@ void dtc_monitor_c6_precharge(void)
   if (((((DAT_0080df55 == '\0') || (DAT_0080df56 != '\0')) ||
        ((float)DAT_000e9ed1 * DAT_000e7a34 <= charge_voltage_cf70)) ||
       ((DAT_0080df67 == '\0' || (DAT_000ea36d == '\0')))) ||
-     ((charge_state_code != DAT_000e9f9c || (DAT_0080df54 == '\0')))) {
+     ((precharge_mode_snapshot != DAT_000e9f9c || (DAT_0080df54 == '\0')))) {
     DAT_0080df9f = 0;
   }
   else {
@@ -67666,7 +67669,7 @@ void dtc_monitor_charge_d5xx(void)
   if (((((DAT_0080df55 != '\0') || (DAT_0080df56 == '\0')) ||
        ((float)DAT_000e9ed3 * DAT_000e7a34 <= charge_voltage_cf70)) ||
       ((DAT_0080df67 == '\0' || (DAT_000ea36f == '\0')))) ||
-     ((charge_state_code != DAT_000e9f9d || (DAT_0080df54 == '\0')))) {
+     ((precharge_mode_snapshot != DAT_000e9f9d || (DAT_0080df54 == '\0')))) {
     DAT_0080df9b = 0;
   }
   else {
@@ -67805,7 +67808,7 @@ void dtc_monitor_0xD0_condenser(void)
   
   piVar3 = &monitor_state_base;
   fVar2 = condenser_voltage_prev - DAT_000e7a30;
-  if ((charge_enable_flag == 0) || (DAT_000ea373 == '\0')) {
+  if ((hv_transfer_permit == 0) || (DAT_000ea373 == '\0')) {
     dtc_C2020_raw = 0;
   }
   else {
@@ -67876,7 +67879,7 @@ void dtc_monitor_C2021(void)
   else {
     uVar2 = 0;
   }
-  if ((charge_enable_flag == 0) || (DAT_000ea375 == '\0')) {
+  if ((hv_transfer_permit == 0) || (DAT_000ea375 == '\0')) {
     dtc_C2021_fault_cond = 0;
   }
   else {
@@ -68064,13 +68067,13 @@ void dtc_monitor_hv_isolation(void)
   }
   bVar2 = local_18 <= (float)DAT_000e9ee1 * DAT_000e7a2c;
   bVar1 = !bVar2;
-  if (((charge_enable_flag == 0) || (charge_state_code <= DAT_000e9f9a)) ||
+  if (((hv_transfer_permit == 0) || (precharge_mode_snapshot <= DAT_000e9f9a)) ||
      ((DAT_000ea377 == '\0' || (DAT_0080df58 == '\0')))) {
     bVar3 = false;
   }
   else {
     bVar3 = true;
-    if (DAT_000e9f9a < charge_state_code) {
+    if (DAT_000e9f9a < precharge_mode_snapshot) {
       local_1b = 1;
       goto LAB_0008e74c;
     }
@@ -68267,7 +68270,7 @@ void p1b1c_chg_detector(void)
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
   if (((((float)DAT_000e9ee4 * DAT_000e7a34 <= charge_voltage_cf54) || (DAT_0080df64 == '\0')) ||
-      (charge_enable_flag == 0)) || (DAT_000ea379 == '\0')) {
+      (hv_transfer_permit == 0)) || (DAT_000ea379 == '\0')) {
     dtc_d3_raw = 0;
   }
   else {
@@ -68359,7 +68362,7 @@ void power_contactor_energy_calc(void)
   uint uStack_c;
   
   charge_v_below_thresh = (float)DAT_000e9ee8 * DAT_000e7a34 <= charge_voltage_cf54;
-  if (((charge_enable_flag == 0) || (DAT_000ea37b == '\0')) || ((bool)charge_v_below_thresh)) {
+  if (((hv_transfer_permit == 0) || (DAT_000ea37b == '\0')) || ((bool)charge_v_below_thresh)) {
     bVar2 = false;
   }
   else {
@@ -68718,8 +68721,9 @@ void dtc_monitor_C202C(void)
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
   if ((((((float)DAT_000e9ef0 * DAT_000e7a34 <= charge_voltage_cf54) ||
-        (charge_voltage_cf64 < (float)DAT_000e9f98 * DAT_000e7a34)) || (charge_enable_flag == 0)) ||
-      ((charge_state_code <= DAT_000e9f9a || (DAT_000ea37c == '\0')))) || (DAT_0080df58 == '\0')) {
+        (charge_voltage_cf64 < (float)DAT_000e9f98 * DAT_000e7a34)) || (hv_transfer_permit == 0)) ||
+      ((precharge_mode_snapshot <= DAT_000e9f9a || (DAT_000ea37c == '\0')))) ||
+     (DAT_0080df58 == '\0')) {
     dtc_C202C_precond = 0;
   }
   else {
@@ -68775,7 +68779,7 @@ void dtc_monitor_C202D(void)
   float fVar1;
   
   fVar1 = charge_voltage_cf64 - dtc_d6_temp_prev;
-  if (((((charge_enable_flag == 0) || (DAT_000ea37d == '\0')) ||
+  if (((((hv_transfer_permit == 0) || (DAT_000ea37d == '\0')) ||
        ((float)DAT_000e9ef4 * DAT_000e7a34 <= charge_voltage_cf54)) ||
       ((float)DAT_000e9ef6 * DAT_000e7a34 <= charge_voltage_cf70)) ||
      ((((float)(int)DAT_000e9ef8 * DAT_000e7a34 <= fVar1 ||
@@ -68860,9 +68864,9 @@ void dtc_monitor_d7(void)
   }
   uVar5 = cVar4 == '\0';
   if (((((bool)uVar5) && (DAT_0080e8dd == '\0')) && (DAT_0080e8de != '\0')) &&
-     (((DAT_0080df64 == '\0' && (charge_enable_flag != 0)) &&
-      ((DAT_000e9f9a < charge_state_code && ((DAT_000ea37f != '\0' && (DAT_0080df58 != '\0'))))))))
-  {
+     (((DAT_0080df64 == '\0' && (hv_transfer_permit != 0)) &&
+      ((DAT_000e9f9a < precharge_mode_snapshot && ((DAT_000ea37f != '\0' && (DAT_0080df58 != '\0')))
+       ))))) {
     DAT_0080df68 = 1;
   }
   else {
@@ -68922,7 +68926,7 @@ void precharge_permit_eval_08fc6c(void)
   }
   _DAT_0080db84 = (undefined2)((uint)DAT_000e9f0a * 0xa000 >> 0xc);
   debounce_counter_up(&DAT_0080df65,&DAT_0080db84,&DAT_0080ed1c);
-  if ((charge_enable_flag == 0) || (condenser_voltage < (float)DAT_000ea35c * DAT_000e7a34)) {
+  if ((hv_transfer_permit == 0) || (condenser_voltage < (float)DAT_000ea35c * DAT_000e7a34)) {
     DAT_0080df67 = 0;
   }
   else {
@@ -69180,7 +69184,7 @@ void diag_status_aggregate_b(void)
        bVar2 + bVar3 * '\x02' + bVar4 * '\x04' + fault_bit_df61 * '\b' + DAT_0080aa72 + DAT_0080aa73
        + DAT_0080aa74 + DAT_0080aa75;
   diag_status_word_hi =
-       DAT_0080df65 * '\x02' + charge_enable_flag + DAT_0080df67 * '\x04' + DAT_0080df64 * '\b' +
+       DAT_0080df65 * '\x02' + hv_transfer_permit + DAT_0080df67 * '\x04' + DAT_0080df64 * '\b' +
        DAT_0080aa7a + DAT_0080aa7b + DAT_0080aa7c + DAT_0080aa7d;
   iVar1 = (uint)((DAT_00804ac9 & 2) != 0) * 0x20 +
           (uint)((DAT_00804ac8 & 2) != 0) * 0x10 +
