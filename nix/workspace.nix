@@ -1,4 +1,4 @@
-{ lib, rustPlatform }:
+{ lib, rustPlatform, pkg-config, libusb1 }:
 
 rustPlatform.buildRustPackage {
   name = "imiev-emulator";
@@ -14,4 +14,7 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ../Cargo.lock;
+
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [ libusb1 ];
 }

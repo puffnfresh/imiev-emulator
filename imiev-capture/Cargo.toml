@@ -1,0 +1,13 @@
+[package]
+name = "imiev-capture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+automotive_diag = { version = "0.1", default-features = false, features = ["kwp2000"] }
+embedded-can = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusb = "0.9"
+ctrlc = "3"
+clap = { version = "4", features = ["derive"] }
