@@ -476,6 +476,24 @@ fn print_dtcs(bus: &mut Bus, ecu: Ecu, label: &str) -> Result<(), String> {
     }
     for d in dtcs {
         println!("{} {label}: {d}", ecu.name());
+        if ecu.can_read_dtc_record() {
+            print_freeze_frame(bus, ecu, d)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_freeze_frame(bus: &mut Bus, ecu: Ecu, dtc: Dtc) -> Result<(), String> {
+    let pdu = bus.ask(ecu, Request::ReadDtcRecord(dtc.code))?;
+    match kwp::parse_dtc_record(dtc.code, &pdu) {
+        None => println!("  freeze frame: {} refused ReadDtcRecord: {}", ecu.name(), describe(&pdu)),
+        Some(None) => println!("  no freeze frame"),
+        Some(Some(record)) => {
+            println!("  freeze frame: {record}");
+            for (i, row) in record.snapshot.chunks(16).enumerate() {
+                println!("    {:02x}: {}", i * 16, hex(row));
+            }
+        }
     }
     Ok(())
 }

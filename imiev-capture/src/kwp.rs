@@ -51,6 +51,10 @@ impl Ecu {
     pub fn can_dump(self) -> bool {
         matches!(self, Ecu::EvEcu | Ecu::Bmu)
     }
+
+    pub fn can_read_dtc_record(self) -> bool {
+        matches!(self, Ecu::EvEcu | Ecu::Bmu)
+    }
 }
 
 pub const MEMORY_SIZE: u32 = 0x10_0000;
@@ -76,6 +80,7 @@ pub enum Request {
     OpenProgrammingSession,
     CloseSession,
     ReadDtcs,
+    ReadDtcRecord(u16),
     ClearDtcs,
     Identify(u8),
     ReadLocal(u8),
@@ -90,6 +95,7 @@ impl Request {
                 KwpCommand::StartDiagnosticSession
             }
             Request::ReadDtcs => KwpCommand::ReadDiagnosticTroubleCodesByStatus,
+            Request::ReadDtcRecord(_) => KwpCommand::ReadStatusOfDiagnosticTroubleCodes,
             Request::ClearDtcs => KwpCommand::ClearDiagnosticInformation,
             Request::Identify(_) => KwpCommand::ReadECUIdentification,
             Request::ReadLocal(_) => KwpCommand::ReadDataByLocalIdentifier,
@@ -104,6 +110,7 @@ impl Request {
             Request::OpenProgrammingSession => vec![KwpSessionType::Reprogramming.into()],
             Request::CloseSession => vec![KwpSessionType::Normal.into()],
             Request::ReadDtcs => vec![0x00, 0xff, 0x00],
+            Request::ReadDtcRecord(code) => code.to_be_bytes().to_vec(),
             Request::ClearDtcs => vec![0xff, 0x00],
             Request::Identify(option) => vec![option],
             Request::ReadLocal(lid) => vec![lid],
@@ -130,6 +137,7 @@ impl Request {
     pub fn frame(self, ecu: Ecu) -> Option<RequestFrame> {
         match self {
             Request::ClearDtcs if !ecu.can_clear() => return None,
+            Request::ReadDtcRecord(_) if !ecu.can_read_dtc_record() => return None,
             Request::OpenProgrammingSession if !ecu.can_dump() => return None,
             Request::Identify(o) if !IDENTIFICATION.iter().any(|(i, _)| *i == o) => return None,
             Request::ReadMemory { address, size } if !ecu.can_dump() || size == 0 || address + size as u32 > MEMORY_SIZE => {
@@ -238,7 +246,58 @@ impl Dtc {
 
 impl std::fmt::Display for Dtc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (status {:02x})", self.label(), self.status)
+        write!(f, "{} (status {:02x}, {})", self.label(), self.status, state(self.status))
+    }
+}
+
+pub fn state(status: u8) -> &'static str {
+    match status {
+        s if s & 0x40 != 0 => "active",
+        s if s & 0x20 != 0 => "stored",
+        _ => "-",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DtcRecord {
+    pub status: u8,
+    pub when_set: u16,
+    pub active_time: u16,
+    pub healing_cycles: u8,
+    pub since_set: u16,
+    pub snapshot: Vec<u8>,
+}
+
+impl std::fmt::Display for DtcRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "status {:02x} ({}), when set {:04x}, active time {}, healing cycles {}, since set {:04x}",
+            self.status,
+            state(self.status),
+            self.when_set,
+            self.active_time,
+            self.healing_cycles,
+            self.since_set
+        )
+    }
+}
+
+pub fn parse_dtc_record(code: u16, pdu: &[u8]) -> Option<Option<DtcRecord>> {
+    let [hi, lo] = code.to_be_bytes();
+    match Request::ReadDtcRecord(code).answer(pdu)? {
+        [0] => Some(None),
+        &[1, h, l, status, s0, s1, a0, a1, healing_cycles, d0, d1, ref snapshot @ ..] if [h, l] == [hi, lo] => {
+            Some(Some(DtcRecord {
+                status,
+                when_set: u16::from_be_bytes([s0, s1]),
+                active_time: u16::from_be_bytes([a0, a1]),
+                healing_cycles,
+                since_set: u16::from_be_bytes([d0, d1]),
+                snapshot: snapshot.to_vec(),
+            }))
+        }
+        _ => None,
     }
 }
 
@@ -284,6 +343,7 @@ mod tests {
         assert_eq!(data(Request::CloseSession), [0x02, 0x10, 0x81, 0, 0, 0, 0, 0]);
         assert_eq!(Request::OpenProgrammingSession.frame(Ecu::Meter), None);
         assert_eq!(data(Request::ReadDtcs), [0x04, 0x18, 0x00, 0xff, 0x00, 0, 0, 0]);
+        assert_eq!(data(Request::ReadDtcRecord(0x1a15)), [0x03, 0x17, 0x1a, 0x15, 0, 0, 0, 0]);
         assert_eq!(data(Request::ClearDtcs), [0x03, 0x14, 0xff, 0x00, 0, 0, 0, 0]);
         assert_eq!(data(Request::Identify(0x9c)), [0x02, 0x1a, 0x9c, 0, 0, 0, 0, 0]);
         assert_eq!(data(Request::ReadLocal(0x20)), [0x02, 0x21, 0x20, 0, 0, 0, 0, 0]);
@@ -315,6 +375,7 @@ mod tests {
     fn refuses_what_was_not_verified() {
         assert!(Request::ClearDtcs.frame(Ecu::Charger).is_none());
         assert!(Request::ClearDtcs.frame(Ecu::Bmu).is_some());
+        assert!(Request::ReadDtcRecord(0x1a15).frame(Ecu::Heater).is_none());
         assert!(Request::Identify(0x91).frame(Ecu::EvEcu).is_none());
     }
 
@@ -342,9 +403,28 @@ mod tests {
     fn parses_dtc_answers() {
         let dtcs = parse_dtcs(&[0x58, 0x01, 0xd8, 0x02, 0x20]).unwrap();
         assert_eq!(dtcs.len(), 1);
-        assert_eq!(dtcs[0].to_string(), "U1802 (status 20)");
+        assert_eq!(dtcs[0].to_string(), "U1802 (status 20, stored)");
         assert_eq!(parse_dtcs(&[0x58, 0x00]).unwrap().len(), 0);
         assert!(parse_dtcs(&[0x7f, 0x18, 0x80]).is_none());
+    }
+
+    #[test]
+    fn parses_dtc_records() {
+        let pdu = [0x57, 0x01, 0xd8, 0x02, 0xe0, 0x37, 0xa5, 0x00, 0x02, 0x03, 0x00, 0x04, 0x00, 0x26, 0x03];
+        let record = parse_dtc_record(0xd802, &pdu).unwrap().unwrap();
+        assert_eq!(record.status, 0xe0);
+        assert_eq!(record.when_set, 0x37a5);
+        assert_eq!(record.active_time, 2);
+        assert_eq!(record.healing_cycles, 3);
+        assert_eq!(record.since_set, 4);
+        assert_eq!(record.snapshot, [0x00, 0x26, 0x03]);
+        assert_eq!(
+            record.to_string(),
+            "status e0 (active), when set 37a5, active time 2, healing cycles 3, since set 0004"
+        );
+        assert_eq!(parse_dtc_record(0x1a51, &[0x57, 0x00]), Some(None));
+        assert_eq!(parse_dtc_record(0x1234, &[0x7f, 0x17, 0x12]), None);
+        assert_eq!(parse_dtc_record(0x1a15, &pdu), None, "a record for another code");
     }
 
     #[test]
