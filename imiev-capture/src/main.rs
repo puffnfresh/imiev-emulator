@@ -1,24 +1,24 @@
 //! Program to capture and dump i-MiEV information available using Tactrix
 //! OpenPort 2.0 clones.
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{value_parser, Args, Parser, Subcommand, ValueEnum};
-use embedded_can::Frame as _;
-use imiev_capture::kwp::{self, Dtc, Ecu, IsoTpRx, Request, Rx, EV_ECU_RECORDS, IDENTIFICATION};
-use imiev_capture::openport::{Clock, Command, Reply, CAN_BAUD};
-use imiev_capture::usb::OpenPort;
-use imiev_capture::{can, item};
+use imiev_capture::bus::Bus;
+use imiev_capture::kwp::{self, describe, hex, Ecu, Request, EV_ECU_RECORDS};
+use imiev_capture::openport::{OpenPort, CAN_BAUD};
+use imiev_capture::report;
+use imiev_capture::usb::Usb;
 
-const KWP_TIMEOUT: Duration = Duration::from_millis(500);
-const DUMP_TIMEOUT: Duration = Duration::from_millis(1000);
+const DUMP_TIMEOUT_US: u64 = 1_000_000;
 const DUMP_ATTEMPTS: u32 = 3;
+
+type UsbBus = Bus<Usb>;
 
 #[derive(Parser)]
 struct Cli {
@@ -64,29 +64,27 @@ enum Cmd {
 }
 
 fn main() {
-    let result = match Cli::parse().command {
-        Cmd::Identify => identify(),
-        Cmd::Sniff(args) => log(args),
-        Cmd::Log { args, lids } => log(LogArgs { lids: lids.unwrap_or(EV_ECU_RECORDS.to_vec()), ..args }),
-        Cmd::Info(e) => info(e.or(&Ecu::ALL)),
-        Cmd::Dtc(e) => dtc(&e.or(&Ecu::ALL), false),
-        Cmd::Clear { ecu } => dtc(&[ecu], true),
-        Cmd::Data { ecus, all } => data(ecus.or(&[Ecu::EvEcu]), all),
-        Cmd::Actuators(e) => actuators(e.or(&[Ecu::EvEcu, Ecu::Bmu])),
-        Cmd::Dump(args) => dump_memory(args),
-    };
+    let result = pollster::block_on(async {
+        match Cli::parse().command {
+            Cmd::Identify => identify().await,
+            Cmd::Sniff(args) => log(args).await,
+            Cmd::Log { args, lids } => log(LogArgs { lids: lids.unwrap_or(EV_ECU_RECORDS.to_vec()), ..args }).await,
+            Cmd::Info(e) => info(e.or(&Ecu::ALL)).await,
+            Cmd::Dtc(e) => dtc(&e.or(&Ecu::ALL), false).await,
+            Cmd::Clear { ecu } => dtc(&[ecu], true).await,
+            Cmd::Data { ecus, all } => data(ecus.or(&[Ecu::EvEcu]), all).await,
+            Cmd::Actuators(e) => actuators(e.or(&[Ecu::EvEcu, Ecu::Bmu])).await,
+            Cmd::Dump(args) => dump_memory(args).await,
+        }
+    });
     if let Err(e) = result {
         eprintln!("imiev-capture: {e}");
         std::process::exit(1);
     }
 }
 
-fn identify() -> Result<(), String> {
-    let mut port = OpenPort::open()?;
-    let id = port.command(Command::Identify)?;
-    port.command(Command::Attach)?;
-    println!("{id}");
-    port.command(Command::Detach)?;
+async fn identify() -> Result<(), String> {
+    println!("{}", OpenPort::identify(Usb::open()?).await?);
     Ok(())
 }
 
@@ -146,7 +144,13 @@ impl ValueEnum for EcuChoice {
     }
 }
 
-fn log(args: LogArgs) -> Result<(), String> {
+async fn open_bus(out: Box<dyn Write>, iface: &str) -> Result<UsbBus, String> {
+    let bus = Bus::open(Usb::open()?, out, iface, Box::new(|w| eprintln!("{w}"))).await?;
+    eprintln!("{}", bus.adapter);
+    Ok(bus)
+}
+
+async fn log(args: LogArgs) -> Result<(), String> {
     let out: Box<dyn Write> = match &args.out {
         Some(path) => Box::new(BufWriter::new(File::create(path).map_err(|e| format!("{path}: {e}"))?)),
         None => Box::new(BufWriter::new(io::stdout())),
@@ -156,29 +160,30 @@ fn log(args: LogArgs) -> Result<(), String> {
     let flag = stop.clone();
     ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)).map_err(|e| e.to_string())?;
 
-    let mut bus = Bus::open(out, args.iface)?;
+    let mut bus = open_bus(out, &args.iface).await?;
     eprintln!("listening at {} kbit/s; Ctrl-C to stop", CAN_BAUD / 1000);
     let started = Instant::now();
     let deadline = args.seconds.map(|s| started + Duration::from_secs_f64(s));
     let running = || !stop.load(Ordering::SeqCst) && deadline.is_none_or(|d| Instant::now() < d);
 
     let result = if args.lids.is_empty() {
-        (|| {
+        async {
             while running() {
-                if let Err(e) = bus.poll(Duration::from_millis(100)) {
+                if let Err(e) = bus.poll(100).await {
                     if !bus.lost {
                         return Err(e);
                     }
-                    bus.reconnect(&running);
+                    reconnect(&mut bus, &running).await;
                 }
             }
             Ok(())
-        })()
+        }
+        .await
     } else {
-        poll_records(&mut bus, &args.lids, running)
+        poll_records(&mut bus, &args.lids, running).await
     };
 
-    bus.close();
+    bus.close().await;
     let total: u64 = bus.per_id.values().sum();
     eprintln!(
         "{total} frames, {} ids in {:.1}s; {} other replies, {} bytes skipped",
@@ -193,15 +198,39 @@ fn log(args: LogArgs) -> Result<(), String> {
     result
 }
 
-fn poll_records(bus: &mut Bus, lids: &[u8], running: impl Fn() -> bool) -> Result<(), String> {
+async fn reconnect(bus: &mut UsbBus, running: &impl Fn() -> bool) {
+    let lost_at = Instant::now();
+    let mut last_error = String::new();
+    eprintln!("adapter lost; reconnecting");
+    while running() {
+        std::thread::sleep(Duration::from_millis(250));
+        let attached = match Usb::open() {
+            Ok(usb) => bus.reattach(usb).await,
+            Err(e) => Err(e),
+        };
+        match attached {
+            Ok(()) => {
+                eprintln!("adapter back after {:.1}s", lost_at.elapsed().as_secs_f64());
+                return;
+            }
+            Err(e) if e != last_error => {
+                eprintln!("{e}; still trying");
+                last_error = e;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+async fn poll_records(bus: &mut UsbBus, lids: &[u8], running: impl Fn() -> bool) -> Result<(), String> {
     let mut answering = None;
     for &lid in lids.iter().cycle() {
         if !running() {
             break;
         }
-        let answer = bus.ask(Ecu::EvEcu, Request::ReadLocal(lid)).map(|_| ());
+        let answer = bus.ask(Ecu::EvEcu, Request::ReadLocal(lid)).await.map(|_| ());
         if bus.lost {
-            bus.reconnect(&running);
+            reconnect(bus, &running).await;
             answering = None;
             continue;
         }
@@ -217,55 +246,44 @@ fn poll_records(bus: &mut Bus, lids: &[u8], running: impl Fn() -> bool) -> Resul
     Ok(())
 }
 
-fn with_bus(f: impl FnOnce(&mut Bus) -> Result<(), String>) -> Result<(), String> {
-    with_logged_bus(Box::new(io::sink()), f)
+async fn with_bus(f: impl AsyncFnOnce(&mut UsbBus) -> Result<(), String>) -> Result<(), String> {
+    with_logged_bus(Box::new(io::sink()), f).await
 }
 
-fn with_logged_bus(out: Box<dyn Write>, f: impl FnOnce(&mut Bus) -> Result<(), String>) -> Result<(), String> {
-    let mut bus = Bus::open(out, "can0".into())?;
-    let result = f(&mut bus);
-    bus.close();
+async fn with_logged_bus(out: Box<dyn Write>, f: impl AsyncFnOnce(&mut UsbBus) -> Result<(), String>) -> Result<(), String> {
+    let mut bus = open_bus(out, "can0").await?;
+    let result = f(&mut bus).await;
+    bus.close().await;
     result
 }
 
-fn info(ecus: Vec<Ecu>) -> Result<(), String> {
-    with_bus(|bus| {
+async fn info(ecus: Vec<Ecu>) -> Result<(), String> {
+    with_bus(async |bus| {
         for ecu in ecus {
             println!("{}:", ecu.name());
-            for (option, label) in IDENTIFICATION {
-                let req = Request::Identify(option);
-                match bus.ask(ecu, req) {
-                    Ok(pdu) => match req.answer(&pdu) {
-                        Some([_, id @ ..]) => println!("  {label}: {}", kwp::render(id)),
-                        _ => println!("  {label}: refused ({})", describe(&pdu)),
-                    },
-                    Err(_) => {
-                        println!("  no answer");
-                        break;
-                    }
-                }
+            match bus.identification(ecu).await {
+                Ok(lines) => lines.iter().for_each(|(label, id)| println!("  {label}: {id}")),
+                Err(_) => println!("  no answer"),
             }
         }
         Ok(())
     })
+    .await
 }
 
-fn dtc(ecus: &[Ecu], clear: bool) -> Result<(), String> {
-    if let Some(e) = ecus.iter().find(|e| clear && !e.can_clear()) {
-        return Err(format!("clearing the {}'s DTCs has not been checked against its firmware", e.name()));
-    }
-    with_bus(|bus| {
+async fn dtc(ecus: &[Ecu], clear: bool) -> Result<(), String> {
+    with_bus(async |bus| {
         for &ecu in ecus {
-            let result = (|| {
-                print_dtcs(bus, ecu, if clear { "before" } else { "stored" })?;
+            let result = async {
+                print_dtcs(bus, ecu, if clear { "before" } else { "stored" }).await?;
                 if clear {
-                    expect(bus, ecu, Request::OpenSession)?;
-                    expect(bus, ecu, Request::ClearDtcs)?;
+                    bus.clear_dtcs(ecu).await?;
                     eprintln!("{}: cleared", ecu.name());
-                    print_dtcs(bus, ecu, "after")?;
+                    print_dtcs(bus, ecu, "after").await?;
                 }
-                Ok(())
-            })();
+                Ok::<_, String>(())
+            }
+            .await;
             if let Err(e) = result {
                 if ecus.len() == 1 {
                     return Err(e);
@@ -275,57 +293,30 @@ fn dtc(ecus: &[Ecu], clear: bool) -> Result<(), String> {
         }
         Ok(())
     })
+    .await
 }
 
-fn data(ecus: Vec<Ecu>, all: bool) -> Result<(), String> {
-    with_bus(|bus| {
+async fn print_dtcs(bus: &mut UsbBus, ecu: Ecu, label: &str) -> Result<(), String> {
+    print!("{}", report::dtc_lines(bus, ecu, label).await?);
+    Ok(())
+}
+
+async fn data(ecus: Vec<Ecu>, all: bool) -> Result<(), String> {
+    with_bus(async |bus| {
         for ecu in ecus {
-            println!("{}:", ecu.name());
-            let variant = variant(bus, ecu);
-            let lids: Vec<u8> = match variant {
-                Some(v) if !all => v.records.iter().map(|(lid, _)| *lid).collect(),
-                _ => (0..=0xff).collect(),
-            };
-            for lid in lids {
-                let req = Request::ReadLocal(lid);
-                let pdu = match bus.ask(ecu, req) {
-                    Ok(pdu) => pdu,
-                    Err(e) if bus.lost => return Err(e),
-                    Err(e) => {
-                        println!("  {lid:02x}: {e}");
-                        continue;
-                    }
-                };
-                match req.answer(&pdu) {
-                    Some([_, record @ ..]) => {
-                        println!("  {lid:02x}: {}", hex(record));
-                        if let Some(variant) = variant {
-                            print_items(variant.record(lid), &pdu);
-                        }
-                    }
-                    _ if variant.is_some() && !all => println!("  {lid:02x}: refused: {}", describe(&pdu)),
-                    _ => {}
-                }
-            }
+            print!("{}", report::records(bus, ecu, all).await?);
         }
         Ok(())
     })
+    .await
 }
 
-fn actuators(ecus: Vec<Ecu>) -> Result<(), String> {
-    with_bus(|bus| {
-        for ecu in ecus {
-            match variant(bus, ecu) {
-                Some(v) if v.actuators.is_empty() => println!("{}: no actuator tests", ecu.name()),
-                Some(v) => {
-                    println!("{} (diag version {:04x}):", ecu.name(), v.diag_version);
-                    v.actuators.iter().for_each(|(lid, name)| println!("  {lid:02x}: {name}"));
-                }
-                None => println!("{}: no MUT-III tables for it", ecu.name()),
-            }
-        }
+async fn actuators(ecus: Vec<Ecu>) -> Result<(), String> {
+    with_bus(async |bus| {
+        print!("{}", report::actuators(bus, &ecus).await);
         Ok(())
     })
+    .await
 }
 
 #[derive(Args)]
@@ -365,7 +356,7 @@ impl DumpFile {
     }
 }
 
-fn dump_memory(args: DumpArgs) -> Result<(), String> {
+async fn dump_memory(args: DumpArgs) -> Result<(), String> {
     let DumpArgs { ecu, ref dir, ref log, session, .. } = args;
     let prefix = format!("{dir}/{}", ecu.name());
     let (id_path, part_path, bin_path) =
@@ -397,38 +388,31 @@ fn dump_memory(args: DumpArgs) -> Result<(), String> {
     }
     let mut out = DumpFile { file, path: part_path.clone() };
 
-    with_logged_bus(log_out, |bus| {
-        expect(bus, ecu, Request::OpenSession)?;
+    with_logged_bus(log_out, async |bus| {
+        bus.expect(ecu, Request::OpenSession).await?;
 
         let mut id = format!("{} identification\n", ecu.name());
-        for (option, label) in IDENTIFICATION {
-            let req = Request::Identify(option);
-            let line = match bus.ask(ecu, req) {
-                Ok(pdu) => match req.answer(&pdu) {
-                    Some([_, id @ ..]) => kwp::render(id),
-                    _ => format!("refused ({})", describe(&pdu)),
-                },
-                Err(e) => e,
-            };
+        for (label, line) in bus.identification(ecu).await? {
             id += &format!("{label}: {line}\n");
         }
         eprint!("{id}");
         std::fs::write(&id_path, id).map_err(|e| format!("{id_path}: {e}"))?;
 
         if session == 0x85 {
-            expect(bus, ecu, Request::OpenProgrammingSession)?;
+            bus.expect(ecu, Request::OpenProgrammingSession).await?;
             eprintln!("in programming session 85");
         }
-        bus.timeout = DUMP_TIMEOUT;
-        let read = read_memory(bus, &args, &mut out, &stop, &mut address);
+        bus.timeout_us = DUMP_TIMEOUT_US;
+        let read = read_memory(bus, &args, &mut out, &stop, &mut address).await;
         if session == 0x85 {
-            match bus.request(ecu, Request::CloseSession) {
+            match bus.request(ecu, Request::CloseSession).await {
                 Ok(pdu) => eprintln!("back to the default session: {}", hex(&pdu)),
                 Err(e) => eprintln!("leaving session 85: {e}; turn the key off and on to reset the ECU"),
             }
         }
         read
-    })?;
+    })
+    .await?;
 
     if address < kwp::MEMORY_SIZE {
         eprintln!("read up to 0x{address:05X}; run dump again to carry on");
@@ -439,8 +423,8 @@ fn dump_memory(args: DumpArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn read_memory(
-    bus: &mut Bus,
+async fn read_memory(
+    bus: &mut UsbBus,
     args: &DumpArgs,
     out: &mut DumpFile,
     stop: &AtomicBool,
@@ -455,7 +439,7 @@ fn read_memory(
             return Err(format!("stopped at 0x{:05X}; run dump again to carry on", *address));
         }
         let size = (end - *address).min(block.into()) as u8;
-        let data = read_block(bus, args, *address, size, &mut retries)?;
+        let data = read_block(bus, args, *address, size, &mut retries).await?;
         out.append(&data)?;
         *address += size as u32;
 
@@ -478,13 +462,13 @@ fn read_memory(
     Ok(())
 }
 
-fn read_block(bus: &mut Bus, args: &DumpArgs, address: u32, size: u8, retries: &mut u32) -> Result<Vec<u8>, String> {
+async fn read_block(bus: &mut UsbBus, args: &DumpArgs, address: u32, size: u8, retries: &mut u32) -> Result<Vec<u8>, String> {
     let &DumpArgs { ecu, session, .. } = args;
     let mut last = String::new();
     for attempt in 0..DUMP_ATTEMPTS {
         *retries += (attempt > 0) as u32;
         let req = Request::ReadMemory { address, size };
-        let answer = if session == 0x92 { bus.ask(ecu, req) } else { bus.request(ecu, req) };
+        let answer = if session == 0x92 { bus.ask(ecu, req).await } else { bus.request(ecu, req).await };
         match answer {
             Ok(pdu) => match req.answer(&pdu) {
                 Some(data) if data.len() == size as usize => return Ok(data.to_vec()),
@@ -503,203 +487,4 @@ fn read_block(bus: &mut Bus, args: &DumpArgs, address: u32, size: u8, retries: &
         }
     }
     Err(format!("reading 0x{address:05X}: {last}; run dump again to carry on"))
-}
-
-fn expect(bus: &mut Bus, ecu: Ecu, req: Request) -> Result<(), String> {
-    let pdu = bus.request(ecu, req)?;
-    if !req.acknowledged(&pdu) {
-        return Err(format!("{} refused {req:?}: {}", ecu.name(), describe(&pdu)));
-    }
-    Ok(())
-}
-
-fn print_dtcs(bus: &mut Bus, ecu: Ecu, label: &str) -> Result<(), String> {
-    let pdu = bus.ask(ecu, Request::ReadDtcs)?;
-    let dtcs: Vec<Dtc> = kwp::parse_dtcs(&pdu).ok_or(format!("{} refused ReadDtcs: {}", ecu.name(), describe(&pdu)))?;
-    if dtcs.is_empty() {
-        println!("{} {label}: no DTCs", ecu.name());
-    }
-    let variant = if dtcs.is_empty() { None } else { variant(bus, ecu) };
-    for d in dtcs {
-        match item::dtc_description(d.code) {
-            Some(text) => println!("{} {label}: {d} {text}", ecu.name()),
-            None => println!("{} {label}: {d}", ecu.name()),
-        }
-        if ecu.can_read_dtc_record() {
-            print_freeze_frame(bus, ecu, d, variant)?;
-        }
-    }
-    Ok(())
-}
-
-fn print_freeze_frame(bus: &mut Bus, ecu: Ecu, dtc: Dtc, variant: Option<&item::Variant>) -> Result<(), String> {
-    let pdu = bus.ask(ecu, Request::ReadDtcRecord(dtc.code))?;
-    match (kwp::parse_dtc_record(dtc.code, &pdu), variant) {
-        (None, _) => println!("  freeze frame: {} refused ReadDtcRecord: {}", ecu.name(), describe(&pdu)),
-        (Some(None), _) => println!("  no freeze frame"),
-        (Some(Some(record)), Some(variant)) => {
-            println!("  freeze frame: status {:02x} ({})", record.status, kwp::state(record.status));
-            print_items(variant.freeze_frame(), &pdu);
-        }
-        (Some(Some(record)), None) => {
-            println!("  freeze frame: {record}");
-            for (i, row) in record.snapshot.chunks(16).enumerate() {
-                println!("    {:02x}: {}", i * 16, hex(row));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn print_items(items: impl Iterator<Item = &'static item::Item>, pdu: &[u8]) {
-    for item in items {
-        if let Some(value) = item.value(pdu) {
-            println!("    {}: {value}", item.name);
-        }
-    }
-}
-
-fn variant(bus: &mut Bus, ecu: Ecu) -> Option<&'static item::Variant> {
-    if !item::covers(ecu) {
-        return None;
-    }
-    let pdu = bus.ask(ecu, Request::Identify(0x87)).ok()?;
-    let Some(version) = item::diag_version(&pdu) else {
-        eprintln!("{}: no diag version in 1A 87 ({}); showing raw bytes", ecu.name(), describe(&pdu));
-        return None;
-    };
-    let variant = item::variant(ecu, version);
-    if variant.is_none() {
-        eprintln!("{}: diag version {version:04x} has no MUT-III tables; showing raw bytes", ecu.name());
-    }
-    variant
-}
-
-struct Bus {
-    port: OpenPort,
-    out: Box<dyn Write>,
-    iface: String,
-    clock: Option<Clock>,
-    per_id: BTreeMap<u32, u64>,
-    other: u64,
-    timeout: Duration,
-    lost: bool,
-}
-
-fn open_can() -> Result<(OpenPort, String), String> {
-    let mut port = OpenPort::open()?;
-    let id = port.command(Command::Identify)?;
-    port.command(Command::Attach)?;
-    port.command(Command::OpenCan)?;
-    port.command(Command::PassAll)?;
-    Ok((port, id))
-}
-
-impl Bus {
-    fn open(out: Box<dyn Write>, iface: String) -> Result<Bus, String> {
-        let (port, id) = open_can()?;
-        eprintln!("{id}");
-        Ok(Bus { port, out, iface, clock: None, per_id: BTreeMap::new(), other: 0, timeout: KWP_TIMEOUT, lost: false })
-    }
-
-    fn reconnect(&mut self, running: &impl Fn() -> bool) {
-        let lost_at = Instant::now();
-        let mut last_error = String::new();
-        eprintln!("adapter lost; reconnecting");
-        while running() {
-            std::thread::sleep(Duration::from_millis(250));
-            match open_can() {
-                Ok((port, _)) => {
-                    self.port = port;
-                    self.clock = None;
-                    self.lost = false;
-                    eprintln!("adapter back after {:.1}s", lost_at.elapsed().as_secs_f64());
-                    return;
-                }
-                Err(e) if e != last_error => {
-                    eprintln!("{e}; still trying");
-                    last_error = e;
-                }
-                Err(_) => {}
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        let _ = self.out.flush();
-        let _ = self.port.command(Command::CloseCan);
-        let _ = self.port.command(Command::Detach);
-    }
-
-    fn poll(&mut self, timeout: Duration) -> Result<Vec<can::Frame>, String> {
-        let mut frames = Vec::new();
-        let replies = self.port.read(timeout).inspect_err(|_| self.lost = true)?;
-        for reply in replies {
-            match reply {
-                Reply::Received { timestamp_us, frame } => {
-                    let clock = self.clock.get_or_insert_with(|| Clock::new(now_us()));
-                    let line = can::candump_line(&frame, clock.wall_us(timestamp_us), &self.iface);
-                    writeln!(self.out, "{line}").map_err(|e| e.to_string())?;
-                    *self.per_id.entry(can::raw_id(frame.id())).or_default() += 1;
-                    frames.push(frame);
-                }
-                Reply::Text(line) if line.starts_with("are") => eprintln!("adapter error: {line}"),
-                _ => self.other += 1,
-            }
-        }
-        self.out.flush().map_err(|e| e.to_string())?;
-        Ok(frames)
-    }
-
-    fn send(&mut self, ecu: Ecu, req: Request) -> Result<(), String> {
-        let frame = req.frame(ecu).ok_or(format!("{req:?} to the {} is not an allowed request", ecu.name()))?.can();
-        self.port.transmit(frame).inspect_err(|_| self.lost = true)?;
-        let line = can::candump_line(&frame, now_us(), &self.iface);
-        writeln!(self.out, "{line}").map_err(|e| e.to_string())
-    }
-
-    fn ask(&mut self, ecu: Ecu, req: Request) -> Result<Vec<u8>, String> {
-        let pdu = self.request(ecu, req)?;
-        if !kwp::needs_session(&pdu) {
-            return Ok(pdu);
-        }
-        self.request(ecu, Request::OpenSession)?;
-        self.request(ecu, req)
-    }
-
-    fn request(&mut self, ecu: Ecu, req: Request) -> Result<Vec<u8>, String> {
-        self.send(ecu, req)?;
-        let mut rx = IsoTpRx::default();
-        let mut deadline = Instant::now() + self.timeout;
-        while Instant::now() < deadline {
-            for frame in self.poll(Duration::from_millis(10))? {
-                if can::raw_id(frame.id()) != u32::from(ecu.response_id()) {
-                    continue;
-                }
-                match rx.push(frame.data()) {
-                    Rx::SendFlowControl => self.send(ecu, Request::FlowControl)?,
-                    Rx::Done(pdu) if kwp::is_response_pending(&pdu) => deadline = Instant::now() + self.timeout,
-                    Rx::Lost => return Err(format!("lost a frame of the {}'s answer", ecu.name())),
-                    Rx::Done(pdu) => return Ok(pdu),
-                    Rx::Incomplete => {}
-                }
-            }
-        }
-        Err(format!("{} did not answer {req:?} (is the car in ON?)", ecu.name()))
-    }
-}
-
-fn describe(pdu: &[u8]) -> String {
-    match kwp::negative(pdu) {
-        Some(nrc) => format!("{} ({nrc:?})", hex(pdu)),
-        None => hex(pdu),
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
-}
-
-fn now_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
 }

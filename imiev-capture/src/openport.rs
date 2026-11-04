@@ -130,6 +130,80 @@ fn can_frame(payload: &[u8]) -> Option<can::Frame> {
     can::Frame::from_raw_id(u32::from_be_bytes(*id), data)
 }
 
+pub trait Transport {
+    fn write(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), String>>;
+    fn read(&mut self, timeout_ms: u32) -> impl Future<Output = Result<Vec<u8>, String>>;
+    fn now_us(&self) -> u64;
+}
+
+const REPLY_TIMEOUT_US: u64 = 2_000_000;
+
+pub struct OpenPort<T> {
+    transport: T,
+    parser: Parser,
+}
+
+impl<T: Transport> OpenPort<T> {
+    pub async fn open_can(transport: T) -> Result<(OpenPort<T>, String), String> {
+        let mut port = OpenPort { transport, parser: Parser::default() };
+        let id = port.command(Command::Identify).await?;
+        port.command(Command::Attach).await?;
+        port.command(Command::OpenCan).await?;
+        port.command(Command::PassAll).await?;
+        Ok((port, id))
+    }
+
+    pub async fn identify(transport: T) -> Result<String, String> {
+        let mut port = OpenPort { transport, parser: Parser::default() };
+        let id = port.command(Command::Identify).await?;
+        port.command(Command::Attach).await?;
+        port.command(Command::Detach).await?;
+        Ok(id)
+    }
+
+    pub async fn close(&mut self) {
+        let _ = self.command(Command::CloseCan).await;
+        let _ = self.command(Command::Detach).await;
+    }
+
+    async fn command(&mut self, cmd: Command) -> Result<String, String> {
+        self.transport.write(&cmd.bytes()).await.map_err(|e| format!("{cmd:?}: write failed: {e}"))?;
+        let deadline = self.now_us() + REPLY_TIMEOUT_US;
+        while self.now_us() < deadline {
+            for reply in self.read(100).await? {
+                if let Reply::Text(line) = reply {
+                    if line.starts_with("are") {
+                        return Err(format!("{cmd:?}: adapter error `{line}`"));
+                    }
+                    if line.starts_with(cmd.ack()) {
+                        return Ok(line);
+                    }
+                }
+            }
+        }
+        Err(format!("{cmd:?}: no `{}` reply within {}s", cmd.ack(), REPLY_TIMEOUT_US / 1_000_000))
+    }
+
+    pub async fn transmit(&mut self, frame: can::Frame) -> Result<(), String> {
+        let cmd = Command::Transmit(frame);
+        self.transport.write(&cmd.bytes()).await.map_err(|e| format!("{cmd:?}: write failed: {e}"))
+    }
+
+    pub async fn read(&mut self, timeout_ms: u32) -> Result<Vec<Reply>, String> {
+        let bytes = self.transport.read(timeout_ms).await?;
+        self.parser.push(&bytes);
+        Ok(std::iter::from_fn(|| self.parser.next_reply()).collect())
+    }
+
+    pub fn now_us(&self) -> u64 {
+        self.transport.now_us()
+    }
+
+    pub fn skipped_bytes(&self) -> u64 {
+        self.parser.skipped
+    }
+}
+
 pub struct Clock {
     anchor_us: u64,
     last: Option<u32>,

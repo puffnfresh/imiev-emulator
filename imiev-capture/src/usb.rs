@@ -1,24 +1,22 @@
-//! Finds, opens and sends commands to Tactrix OpenPort 2.0 clones.
+//! Finds and opens Tactrix OpenPort 2.0 clones over libusb.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusb::{Context, DeviceHandle, Direction, TransferType, UsbContext};
 
-use crate::can;
-use crate::openport::{Command, Parser, Reply, PRODUCT_ID, VENDOR_ID};
+use crate::openport::{Transport, PRODUCT_ID, VENDOR_ID};
 
-const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub struct OpenPort {
+pub struct Usb {
     handle: DeviceHandle<Context>,
     iface: u8,
     ep_in: u8,
     ep_out: u8,
-    parser: Parser,
 }
 
-impl OpenPort {
-    pub fn open() -> Result<OpenPort, String> {
+impl Usb {
+    pub fn open() -> Result<Usb, String> {
         let ctx = Context::new().map_err(|e| format!("libusb init: {e}"))?;
         let device = ctx
             .devices()
@@ -49,7 +47,7 @@ impl OpenPort {
         };
 
         let handle = device.open().map_err(|e| {
-            format!("opening adapter: {e} (needs a udev rule for {VENDOR_ID:04x}:{PRODUCT_ID:04x})")
+            format!("opening adapter: {e} (needs a udev rule for {VENDOR_ID:04x}:{PRODUCT_ID:04x}; see README)")
         })?;
         for i in [0, iface] {
             if handle.kernel_driver_active(i).unwrap_or(false) {
@@ -57,54 +55,30 @@ impl OpenPort {
             }
         }
         handle.claim_interface(iface).map_err(|e| format!("claiming interface {iface}: {e}"))?;
-        Ok(OpenPort { handle, iface, ep_in, ep_out, parser: Parser::default() })
-    }
-
-    pub fn command(&mut self, cmd: Command) -> Result<String, String> {
-        self.write(cmd)?;
-        let deadline = Instant::now() + REPLY_TIMEOUT;
-        while Instant::now() < deadline {
-            for reply in self.read(Duration::from_millis(100))? {
-                if let Reply::Text(line) = reply {
-                    if line.starts_with("are") {
-                        return Err(format!("{cmd:?}: adapter error `{line}`"));
-                    }
-                    if line.starts_with(cmd.ack()) {
-                        return Ok(line);
-                    }
-                }
-            }
-        }
-        Err(format!("{cmd:?}: no `{}` reply within {REPLY_TIMEOUT:?}", cmd.ack()))
-    }
-
-    pub fn transmit(&mut self, frame: can::Frame) -> Result<(), String> {
-        self.write(Command::Transmit(frame))
-    }
-
-    fn write(&mut self, cmd: Command) -> Result<(), String> {
-        self.handle
-            .write_bulk(self.ep_out, &cmd.bytes(), REPLY_TIMEOUT)
-            .map(|_| ())
-            .map_err(|e| format!("{cmd:?}: write failed: {e}"))
-    }
-
-    pub fn read(&mut self, timeout: Duration) -> Result<Vec<Reply>, String> {
-        let mut buf = [0u8; 4096];
-        match self.handle.read_bulk(self.ep_in, &mut buf, timeout) {
-            Ok(n) => self.parser.push(&buf[..n]),
-            Err(rusb::Error::Timeout) => {}
-            Err(e) => return Err(format!("USB read failed: {e}")),
-        }
-        Ok(std::iter::from_fn(|| self.parser.next_reply()).collect())
-    }
-
-    pub fn skipped_bytes(&self) -> u64 {
-        self.parser.skipped
+        Ok(Usb { handle, iface, ep_in, ep_out })
     }
 }
 
-impl Drop for OpenPort {
+impl Transport for Usb {
+    async fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.handle.write_bulk(self.ep_out, bytes, WRITE_TIMEOUT).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    async fn read(&mut self, timeout_ms: u32) -> Result<Vec<u8>, String> {
+        let mut buf = [0u8; 4096];
+        match self.handle.read_bulk(self.ep_in, &mut buf, Duration::from_millis(timeout_ms.into())) {
+            Ok(n) => Ok(buf[..n].to_vec()),
+            Err(rusb::Error::Timeout) => Ok(Vec::new()),
+            Err(e) => Err(format!("USB read failed: {e}")),
+        }
+    }
+
+    fn now_us(&self) -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
+    }
+}
+
+impl Drop for Usb {
     fn drop(&mut self) {
         let _ = self.handle.release_interface(self.iface);
         let _ = self.handle.attach_kernel_driver(0);

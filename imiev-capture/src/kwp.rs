@@ -183,6 +183,17 @@ pub fn needs_session(pdu: &[u8]) -> bool {
     negative(pdu) == Some(KwpError::ServiceNotSupportedInActiveSession.into())
 }
 
+pub fn describe(pdu: &[u8]) -> String {
+    match negative(pdu) {
+        Some(nrc) => format!("{} ({nrc:?})", hex(pdu)),
+        None => hex(pdu),
+    }
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
 pub enum Rx {
     Incomplete,
     SendFlowControl,
@@ -231,7 +242,7 @@ impl IsoTpRx {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dtc {
     pub code: u16,
     pub status: u8,
