@@ -11,5 +11,5 @@ pub use battery::Cmu;
 pub use driver::{DriverControls, Gear};
 pub use eeprom::Eeprom;
 pub use hv::{AcRelay, Condenser, Contactor};
-pub use ic2::{Can0RxIsr, Ic2Companion};
+pub use ic2::Ic2Companion;
 pub use inverter::{Inverter, Vehicle, VEHICLE_DT};

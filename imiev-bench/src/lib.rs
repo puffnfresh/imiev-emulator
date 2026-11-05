@@ -154,8 +154,7 @@ impl Simulation {
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(Contactor))
             .with_part(Box::new(AcRelay))
-            .with_local_part(Box::new(Ic2Companion::default()))
-            .with_local_part(Box::new(Can0RxIsr::default()));
+            .with_local_part(Box::new(Ic2Companion::default()));
         Simulation {
             bmu,
             ev_ecu,

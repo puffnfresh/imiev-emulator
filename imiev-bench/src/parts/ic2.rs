@@ -4,30 +4,12 @@ use mh8106f::System;
 
 use crate::{CanBus, Part};
 
-const EV_ECU_DISPATCH_JL: u32 = 0x0000_39bc;
-const EV_ECU_DISPATCH_JL_RET: u32 = 0x0000_39c0;
-const EV_ECU_CAN0_RX_ISR: u32 = 0x0002_7d40;
-
 const IC2_Q_MARKER: u32 = 0x0080_8249; // & 0xf0 = slot family (0x10 / 0x30)
 const IC2_Q_ID: u32 = 0x0080_824a; // message id being asked
 const IC2_Q_DATA: u32 = 0x0080_824b; // the data byte the question carries
 const IC2_TX_SLOTS: u32 = 0x0080_81ac; // 30 entries * 4: [id, marker|state, byte2, byte3]
 const IC2_STARTUP_STATE: u32 = 0x0080_825a; // 0->4->0xFFFF(POST done)
 const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question frame is fully sent
-
-#[derive(Default)]
-pub struct Can0RxIsr {
-    armed: bool,
-}
-
-impl Part for Can0RxIsr {
-    fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        if !self.armed && chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
-            chip.configure_can0_rx_isr(EV_ECU_DISPATCH_JL, EV_ECU_DISPATCH_JL_RET, EV_ECU_CAN0_RX_ISR);
-            self.armed = true;
-        }
-    }
-}
 
 #[derive(Default)]
 pub struct Ic2Companion {

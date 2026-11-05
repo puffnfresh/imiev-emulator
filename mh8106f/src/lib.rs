@@ -27,7 +27,6 @@ use machine::Machine;
 mod tests;
 
 const SLOW_TICK_IVECT: u16 = 0x00b0;
-const ICAN0CR: u32 = 0x0080_0060; // CAN0 T/R & Error interrupt control (firmware enables = level 2)
 
 pub const FLASH_BASE: u32 = 0x0000_0000;
 pub const FLASH_SIZE: u32 = 0x0010_0000; // 1 MB
@@ -62,11 +61,6 @@ pub struct System {
     interrupts_taken: u64,
     pc_watch: Option<u32>,
     pc_hit: bool,
-    can0_rx_pending: bool,
-    can0_rx_arm: bool,
-    can0_jl_pc: u32,     // the dispatcher instruction that JLs to the (unresolved) handler
-    can0_jl_return: u32, // where that JL would return (LR for the ISR trampoline)
-    can0_isr: u32,       // the CAN0-RX ISR trampoline; 0 = CAN0-RX interrupt not modeled
 }
 
 impl System {
@@ -77,19 +71,9 @@ impl System {
             interrupts_taken: 0,
             pc_watch: None,
             pc_hit: false,
-            can0_rx_pending: false,
-            can0_rx_arm: false,
-            can0_jl_pc: 0,
-            can0_jl_return: 0,
-            can0_isr: 0,
         }
     }
 
-    pub fn configure_can0_rx_isr(&mut self, jl_pc: u32, return_pc: u32, isr: u32) {
-        self.can0_jl_pc = jl_pc;
-        self.can0_jl_return = return_pc;
-        self.can0_isr = isr;
-    }
 
     pub fn watch_pc(&mut self, addr: u32) {
         self.pc_watch = Some(addr);
@@ -144,8 +128,8 @@ impl System {
     }
 
     pub fn inject_can0(&mut self, id: u16, data: &[u8]) -> bool {
-        if self.mem.can0.deliver_rx(id, data).is_some() {
-            self.can0_rx_pending = true;
+        if let Some(iv) = self.mem.can0.deliver_rx(id, data) {
+            self.mem.icu.raise(iv);
             true
         } else {
             false
@@ -189,12 +173,6 @@ impl System {
         if self.pc_watch == Some(self.cpu.pc) {
             self.pc_hit = true;
         }
-        if self.can0_rx_arm && self.cpu.pc == self.can0_jl_pc {
-            self.cpu.r[0] = self.can0_isr;
-            self.cpu.r[14] = self.can0_jl_return;
-            self.cpu.pc = self.can0_isr;
-            self.can0_rx_arm = false;
-        }
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
         if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {
@@ -210,14 +188,6 @@ impl System {
                 if iv == periph::timer::TICK_IVECT {
                     self.mem.raise_fast_tick_subsource();
                 }
-                self.cpu.take_interrupt(periph::icu::EI_VECTOR);
-                self.interrupts_taken += 1;
-                self.mem.tick(1);
-                return true;
-            }
-            if self.can0_isr != 0 && self.can0_rx_pending && self.mem.icu.icr_enabled(ICAN0CR) {
-                self.can0_rx_pending = false;
-                self.can0_rx_arm = true;
                 self.cpu.take_interrupt(periph::icu::EI_VECTOR);
                 self.interrupts_taken += 1;
                 self.mem.tick(1);
