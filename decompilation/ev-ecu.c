@@ -7982,12 +7982,13 @@ void fault_lamp_output_set(void)
 }
 
 
-//=== 0x0000b9b0 eeprom_write_worker [NAMED] (calls=6)
+//=== 0x0000b9b0 aps2_test_pulse_check [NAMED] (calls=6)
 
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* EEPROM/NVM write+verify state machine [conf: med] */
+/* every 10th call raises P1.0 (grounds accelerator sensor 2, ADC ch5) and checks the reading drops; 10 failures ->
+   P060B (A/D processing performance). Was eeprom_write_worker; the bench confirmed the pin effect [conf: high] */
 
-void eeprom_write_worker(void)
+void aps2_test_pulse_check(void)
 
 {
   uint uVar1;
@@ -8027,11 +8028,11 @@ void eeprom_write_worker(void)
   }
   if (DAT_0080808c == 0) {
     store_complemented_word((uint *)&DAT_0080808c,10);
-    gpio_p1_set_bit0();
+    aps2_test_pulse_on();
     *(byte *)((int)puVar2 + 1) = *(byte *)((int)puVar2 + 1) | 2;
   }
   else {
-    gpio_clear_p1_bit0();
+    aps2_test_pulse_off();
     *(byte *)((int)puVar2 + 1) = *(byte *)((int)puVar2 + 1) & 0xfd;
   }
   uVar1 = math_sat_sub_u16((uint)DAT_0080808c,1);
@@ -11772,11 +11773,11 @@ ushort sensor_plausibility_combine(uint param_1,uint param_2,ushort param_3,usho
 }
 
 
-//=== 0x000123f8 gpio_p1_set_bit0 [NAMED] (calls=2)
+//=== 0x000123f8 aps2_test_pulse_on [NAMED] (calls=2)
 
-/* set P1DATA bit0 unless mode==2 [conf: med] */
+/* P1DATA bit0 = 1: ground accelerator sensor 2 for the A/D self-test (was gpio_p1_set_bit0) [conf: high] */
 
-void gpio_p1_set_bit0(void)
+void aps2_test_pulse_on(void)
 
 {
   irq_disable_push_psw();
@@ -11786,11 +11787,11 @@ void gpio_p1_set_bit0(void)
 }
 
 
-//=== 0x00012428 gpio_clear_p1_bit0 [NAMED] (calls=2)
+//=== 0x00012428 aps2_test_pulse_off [NAMED] (calls=2)
 
-/* clear P1DATA bit0 unless e0233==1 [conf: med] */
+/* P1DATA bit0 = 0 (was gpio_clear_p1_bit0) [conf: high] */
 
-void gpio_clear_p1_bit0(void)
+void aps2_test_pulse_off(void)
 
 {
   irq_disable_push_psw();
@@ -12007,8 +12008,8 @@ void startup_timer_cfg(void)
   DAT_00808244 = DAT_0080822c;
   DAT_00808247 = DAT_0080822d;
   DAT_00808245 = DAT_0080822d;
-  eeprom_wear_ctr_a = 0xb;
-  eeprom_wear_ctr_b = 0xb;
+  ic2_watchdog_reported = 0xb;
+  ic2_watchdog_counter = 0xb;
   adc_watchdog_count = 0xb;
   eeprom_wear_peak = -1;
   _DAT_008081a4 = (ushort)DAT_0080822c * 0x100 + (ushort)DAT_0080822d;
@@ -12236,8 +12237,8 @@ LAB_00012bd4:
         startup_event_enqueue(2,1,0);
         irq_disable_push_psw();
         eeprom_flags = eeprom_flags | 1;
-        if (eeprom_wear_ctr_b != 0) {
-          eeprom_wear_ctr_b = eeprom_wear_ctr_b + -1;
+        if (ic2_watchdog_counter != 0) {
+          ic2_watchdog_counter = ic2_watchdog_counter + -1;
         }
         crit_section_exit();
       }
@@ -12842,7 +12843,7 @@ void adc_watchdog_dtc(void)
       uVar1 = math_sat_sub_u16(uVar1 & 0xffff,5);
       uVar1 = math_sat_sub_u16(uVar1,1);
       if ((uVar1 & 3) == 0) {
-        eeprom_wear_level_step(0xf0);
+        ic2_watchdog_check(0xf0);
       }
     }
   }
@@ -12859,12 +12860,13 @@ void adc_watchdog_dtc(void)
 }
 
 
-//=== 0x00013fa8 eeprom_wear_level_step [NAMED] (calls=8)
+//=== 0x00013fa8 ic2_watchdog_check [NAMED] (calls=8)
 
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* EEPROM read/write w/ FUN_0004db80, wear counter 0x808294 [conf: med] */
+/* IC2 (System LSI) watchdog step: checks the id-0x1e answer is c0/f0 and steps ic2_watchdog_counter (+3 good, -1 bad);
+   resyncs it to the IC2-reported value + 3. Was eeprom_wear_level_step [conf: med] */
 
-void eeprom_wear_level_step(uint param_1)
+void ic2_watchdog_check(uint param_1)
 
 {
   uint uVar1;
@@ -12874,19 +12876,19 @@ void eeprom_wear_level_step(uint param_1)
   short *psVar5;
   byte bStack_5;
   
-  psVar5 = &eeprom_wear_ctr_b;
+  psVar5 = &ic2_watchdog_counter;
   uVar1 = nvm_write_request((ushort)param_1);
   bStack_5 = (byte)uVar1;
   irq_disable_push_psw();
   uVar4 = (ushort)param_1;
   if ((((uVar1 & 0xff) == 0xc0) || ((uVar1 & 0xff) == 0xf0)) && ((param_1 & 0xff) == 0xf0)) {
-    uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_b,3);
+    uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_counter,3);
     *psVar5 = (short)uVar1;
     uVar1 = (uint)(ushort)adc_watchdog_count;
   }
   else if (((uVar1 & 0xff) == 0xc0) || ((uVar1 & 0xff) == 0xf0)) {
-    if (eeprom_wear_ctr_a == *psVar5) {
-      uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_b,3);
+    if (ic2_watchdog_reported == *psVar5) {
+      uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_counter,3);
       *psVar5 = (short)uVar1;
 joined_m0x00014030:
       if (adc_watchdog_count != 0) {
@@ -12894,14 +12896,14 @@ joined_m0x00014030:
       }
       goto LAB_0001412c;
     }
-    uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_a,3);
+    uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_reported,3);
     *psVar5 = (short)uVar1;
     uVar1 = (uint)(ushort)adc_watchdog_count;
   }
   else if ((param_1 & 0xff) == 0xf0) {
     if (*psVar5 == 0) {
       bStack_5 = 0xf0;
-      uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_b,3);
+      uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_counter,3);
       *psVar5 = (short)uVar1;
     }
     else if (*psVar5 != 0) {
@@ -12910,10 +12912,10 @@ joined_m0x00014030:
     uVar1 = (uint)(ushort)adc_watchdog_count;
   }
   else {
-    if (eeprom_wear_ctr_a == *psVar5) {
+    if (ic2_watchdog_reported == *psVar5) {
       if (*psVar5 == 0) {
         bStack_5 = 0xf0;
-        uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_b,3);
+        uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_counter,3);
         *psVar5 = (short)uVar1;
       }
       else if (*psVar5 != 0) {
@@ -12922,12 +12924,12 @@ joined_m0x00014030:
       goto joined_m0x00014030;
     }
     if ((eeprom_flags & 2U) == 0) {
-      iVar2 = math_sat_sub_u16((uint)(ushort)eeprom_wear_ctr_a,1);
+      iVar2 = math_sat_sub_u16((uint)(ushort)ic2_watchdog_reported,1);
       *psVar5 = (short)iVar2;
     }
     else {
       bStack_5 = 0xf0;
-      uVar1 = add_sat_u16((uint)(ushort)eeprom_wear_ctr_a,3);
+      uVar1 = add_sat_u16((uint)(ushort)ic2_watchdog_reported,3);
       *psVar5 = (short)uVar1;
     }
     uVar1 = (uint)(ushort)adc_watchdog_count;
@@ -13354,8 +13356,8 @@ void nvm_shadow_snapshot(void)
       *(undefined1 *)((int)psVar4 + uVar2 + 0x46) = *(undefined1 *)((int)psVar4 + uVar1 + 0x47);
       *(undefined1 *)((int)psVar4 + uVar2 + 0x50) = *(undefined1 *)((int)psVar4 + uVar1 + 0x51);
     }
-    *(undefined1 *)((int)psVar4 + 0x27) = (undefined1)eeprom_wear_ctr_a;
-    *(undefined1 *)((int)psVar4 + 0x31) = (undefined1)eeprom_wear_ctr_b;
+    *(undefined1 *)((int)psVar4 + 0x27) = (undefined1)ic2_watchdog_reported;
+    *(undefined1 *)((int)psVar4 + 0x31) = (undefined1)ic2_watchdog_counter;
     *(undefined1 *)((int)psVar4 + 0x3b) = (undefined1)adc_watchdog_count;
     *(undefined1 *)((int)psVar4 + 0x45) = DAT_0080829b;
     *(undefined1 *)((int)psVar4 + 0x4f) = (undefined1)eeprom_status_word;
@@ -19465,7 +19467,7 @@ void FUN_00025044(void)
   
   can0_pending_count = 0;
   for (sVar1 = 0x12; -1 < sVar1; sVar1 = sVar1 + -1) {
-    (&DAT_0080b827)[sVar1] = 0;
+    (&can0_tx_pending)[sVar1] = 0;
   }
   return;
 }
@@ -19592,7 +19594,7 @@ void can0_driver_init(uint param_1)
   mem0x0080b808 = &C0MSL0SID0;
   can0_cnt_base = (int)&C0MSL0CNT;
   can0_init_flag_a = 0;
-  can0_init_flag_c = 0;
+  can0_tx_inhibit = 0;
   FUN_00025044();
   for (sVar1 = 0; sVar1 < 0x16; sVar1 = sVar1 + 1) {
     (&can0_mbx_flags)[(byte)(&DAT_000e56c3)[sVar1]] = 0;
@@ -19626,7 +19628,7 @@ undefined4 can0_tx_request(uint param_1)
   }
   else {
     uVar2 = param_1 & 0xff;
-    if ((can0_init_flag_c & (&DAT_000e57c7)[uVar2]) == 0) {
+    if ((can0_tx_inhibit & (&DAT_000e57c7)[uVar2]) == 0) {
       irq_save_psw_passthru(&DAT_000e57c7 + uVar2);
       if (can0_tx_active_slot == 0xff) {
         can0_tx_active_slot = (byte)param_1;
@@ -19635,8 +19637,8 @@ undefined4 can0_tx_request(uint param_1)
         uVar1 = extraout_R0;
       }
       else {
-        if ((&DAT_0080b827)[uVar2] == '\0') {
-          (&DAT_0080b827)[uVar2] = 1;
+        if ((&can0_tx_pending)[uVar2] == 0) {
+          (&can0_tx_pending)[uVar2] = 1;
           can0_pending_count = can0_pending_count + 1;
         }
         get_isotp_len_b820();
@@ -19661,9 +19663,9 @@ undefined2 isotp_channel_release(uint param_1)
   undefined2 uVar1;
   
   irq_save_psw_passthru(param_1);
-  if ((&DAT_0080b827)[param_1 & 0xff] != '\0') {
+  if ((&can0_tx_pending)[param_1 & 0xff] != 0) {
     can0_pending_count = can0_pending_count - 1;
-    (&DAT_0080b827)[param_1 & 0xff] = 0;
+    (&can0_tx_pending)[param_1 & 0xff] = 0;
   }
   if ((uint)can0_tx_active_slot == (param_1 & 0xff)) {
     can0_tx_active_slot = 0xfe;
@@ -19716,10 +19718,10 @@ undefined4 can0_rx_isr(undefined4 param_1,undefined4 param_2,undefined4 param_3,
       get_isotp_len_b820();
       for (uVar6 = 0x12; -1 < (short)uVar6; uVar6 = uVar6 - 1) {
         uVar7 = uVar6 & 0xff;
-        if ((&DAT_0080b827)[uVar7] != '\0') {
+        if ((&can0_tx_pending)[uVar7] != 0) {
           irq_save_psw_passthru((int)(short)uVar6);
           if (can0_pending_count != 0) {
-            (&DAT_0080b827)[uVar7] = 0;
+            (&can0_tx_pending)[uVar7] = 0;
             can0_pending_count = can0_pending_count - 1;
           }
           get_isotp_len_b820();
@@ -19819,7 +19821,7 @@ void isotp_rx_ack(void)
 void uds_set_pending_flag_b83a(byte param_1)
 
 {
-  can0_init_flag_c = param_1 | can0_init_flag_c;
+  can0_tx_inhibit = param_1 | can0_tx_inhibit;
   return;
 }
 
@@ -19831,7 +19833,7 @@ void uds_set_pending_flag_b83a(byte param_1)
 void isotp_flags_mask(byte param_1)
 
 {
-  can0_init_flag_c = param_1 & can0_init_flag_c;
+  can0_tx_inhibit = param_1 & can0_tx_inhibit;
   return;
 }
 
@@ -21071,7 +21073,7 @@ void can_mailbox_integrity(int param_1)
   }
   crit_section_exit();
   if (can_rx_state != 1) {
-    can_rx_timeout_decrementer(in_R8);
+    can0_periodic_tx_scheduler(in_R8);
   }
   bVar3 = can_integrity_ctr + 1;
   can_integrity_ctr = can_integrity_ctr + 1;
@@ -21121,7 +21123,7 @@ LAB_00027588:
         }
         crit_section_exit();
         if (can_rx_state != 1) {
-          can_rx_timeout_decrementer(in_R8);
+          can0_periodic_tx_scheduler(in_R8);
         }
         bVar1 = can_integrity_ctr + 1;
         can_integrity_ctr = can_integrity_ctr + 1;
@@ -21165,7 +21167,7 @@ void can0_reinit_sequencer(void)
       DAT_0080bcaa = 0;
       DAT_0080bcd7 = 0;
       DAT_0080bcd8 = 0x14;
-      can_rx_timeout_init = 0;
+      can0_periodic_tx_init = 0;
       DAT_0080bcdc = 0;
       _can0_reinit_cnt0 = 0x96;
       _can0_reinit_cnt1 = 0x96;
@@ -21204,7 +21206,7 @@ void can0_reinit_sequencer(void)
         pbVar1[1] = 0;
       }
       isotp_rx_ack();
-      can_rx_timeout_init = 0;
+      can0_periodic_tx_init = 0;
       can0_tx_wait_complete();
       if (_can0_reinit_cnt0 == 0) {
         *pbVar2 = *pbVar2 | 4;
@@ -21286,12 +21288,13 @@ undefined4 speed_threshold_hysteresis(float param_1,undefined4 param_2)
 }
 
 
-//=== 0x000279b8 can_rx_timeout_decrementer [NAMED] (calls=1)
+//=== 0x000279b8 can0_periodic_tx_scheduler [NAMED] (calls=1)
 
 /* WARNING: Removing unreachable block (mem,0x00027af4) */
-/* decrements 0x80bcb4 17-slot timeout table, expiry cb [conf: med] */
+/* 17 countdown slots (phases from 0xe59ee); at zero calls can0_tx_request(0xe59dc[k]) for periodic frame k; frame 4
+   (0x292) only if tx_0x292_enable. Was can_rx_timeout_decrementer [conf: high] */
 
-void can_rx_timeout_decrementer(int param_1)
+void can0_periodic_tx_scheduler(int param_1)
 
 {
   short *psVar1;
@@ -21299,22 +21302,23 @@ void can_rx_timeout_decrementer(int param_1)
   byte bVar3;
   int iVar4;
   
-  if ((can_rx_timeout_init != 1) && (param_1 == 0)) {
+  if ((can0_periodic_tx_init != 1) && (param_1 == 0)) {
     psVar2 = &DAT_000e59ee;
-    psVar1 = &can_rx_timeout_table;
+    psVar1 = &can0_periodic_tx_countdown;
     for (bVar3 = 0; bVar3 < 0x11; bVar3 = bVar3 + 1) {
       *psVar1 = *psVar2;
       psVar1 = psVar1 + 1;
       psVar2 = psVar2 + 1;
     }
-    can_rx_timeout_init = 1;
+    can0_periodic_tx_init = 1;
   }
-  if (can_rx_timeout_init == 1) {
-    psVar1 = &can_rx_timeout_table;
+  if (can0_periodic_tx_init == 1) {
+    psVar1 = &can0_periodic_tx_countdown;
     iVar4 = 0;
     for (bVar3 = 0; bVar3 < 0x11; bVar3 = bVar3 + 1) {
       if (*psVar1 != 0) {
-        *(short *)((int)&can_rx_timeout_table + iVar4) = *(short *)((int)&can_rx_timeout_table + iVar4) + -1;
+        *(short *)((int)&can0_periodic_tx_countdown + iVar4) = *(short *)((int)&can0_periodic_tx_countdown + iVar4) + -1
+        ;
       }
       if ((*psVar1 == 0) && (bVar3 < 0x11)) {
         FUN_00027a5c();
@@ -21390,7 +21394,7 @@ void can0_reinit_reload(void)
   irq_disable_push_psw();
   can0_reinit_wait = 0;
   isotp_rx_ack();
-  can_rx_timeout_init = 0;
+  can0_periodic_tx_init = 0;
   CAN0CNT._1_1_ = (byte)CAN0CNT | 0x10;
   can0_program_mailbox_filters(0);
   if ((*(int *)psVar1 == 0) || (*(int *)((int)psVar1 + 4) == 0)) {
@@ -21458,7 +21462,7 @@ void can0_init_sequence(void)
     if (pbVar1[1] != 1) {
       irq_disable_push_psw();
       isotp_rx_ack();
-      can_rx_timeout_init = 0;
+      can0_periodic_tx_init = 0;
       can0_reinit_wait = 100;
       CAN0CNT._1_1_ = (byte)CAN0CNT | 0x10;
       can0_program_mailbox_filters(0);
@@ -22897,7 +22901,7 @@ void data_valid_clear(void)
 
 {
   data_valid = 0;
-  DAT_0080c00d = 0;
+  tx_0x292_enable = 0;
   DAT_0080c00e = 0;
   DAT_0080c00f = 0;
   can_link_online = 0;
@@ -22917,7 +22921,7 @@ void data_valid_flags_apply(char *param_1,undefined4 *param_2)
   
   if (param_1 != (char *)0x0) {
     data_valid = *param_1 == '\x01';
-    DAT_0080c00d = param_1[2] == '\x01';
+    tx_0x292_enable = param_1[2] == '\x01';
     DAT_0080c00e = param_1[3] == '\x01';
     DAT_0080c00f = param_1[4] == '\x01';
     can_link_online = param_1[5] == '\x01';
@@ -25446,7 +25450,8 @@ void telltale_block3_clear(void)
 
 //=== 0x0002c8ac build_0x285 [NAMED] (calls=7)
 
-/* torque command (torque + 2000) */
+/* inverter command: b0:b1 = motor torque * 10 + 2000 (Nm, from torque_cmd_nm), b2 = operating mode (0x14 in DRIVE).
+   Bench-confirmed [conf: high] */
 
 void build_0x285(float *param_1,undefined4 *param_2)
 
@@ -25463,11 +25468,11 @@ void build_0x285(float *param_1,undefined4 *param_2)
       build_default_meter_frame((undefined4 *)&telltale_frame);
     }
     else {
-      build_can_battery_status(param_1,&battery_status_frame);
-      build_telltale_frame(&battery_status_frame,(undefined4 *)&telltale_frame);
+      build_0x285_torque_word(param_1,&tx_0x285_torque_word);
+      build_telltale_frame(&tx_0x285_torque_word,(undefined4 *)&telltale_frame);
       irq_disable_push_psw();
-      tx0x285_byte0 = (byte)battery_status_frame;
-      tx_0x285 = (undefined1)((ushort)battery_status_frame >> 8);
+      tx0x285_byte0 = (byte)tx_0x285_torque_word;
+      tx_0x285 = (undefined1)((ushort)tx_0x285_torque_word >> 8);
       tx0x285_byte2 =
            DAT_0080c186 & 0xf | (DAT_0080c187 & 1) << 4 | (DAT_0080c188 & 1) << 5 | (DAT_0080c189 & 1) << 6 |
            (byte)(((uint)DAT_0080c18a << 0x1f) >> 0x18);
@@ -25646,7 +25651,8 @@ void telltale_block_c018_init(void)
 
 //=== 0x0002ceb0 build_0x292 [NAMED] (calls=8)
 
-/* safety torque command */
+/* safety torque command; built every pass but never sent on 9499A18206: set_data_valid forces tx_0x292_enable = 0
+   [conf: high] */
 
 void build_0x292(float *param_1,undefined4 *param_2)
 
@@ -27176,11 +27182,11 @@ undefined4 FUN_000300a0(char param_1)
 }
 
 
-//=== 0x000300b4 build_can_battery_status [NAMED] (calls=3)
+//=== 0x000300b4 build_0x285_torque_word [NAMED] (calls=3)
 
-/* encode float battery fields into CAN frame bytes [conf: med] */
+/* encodes the commanded torque float into 0x285 b0:b1 (torque * 10 + 2000). Was build_can_battery_status [conf: med] */
 
-void build_can_battery_status(float *param_1,undefined2 *param_2)
+void build_0x285_torque_word(float *param_1,undefined2 *param_2)
 
 {
   float fVar1;
@@ -33116,7 +33122,7 @@ void build_diag_snapshot_0080ccfb(float *param_1)
       uStack_a = *(undefined1 *)((int)param_1 + 0x22);
       uStack_9 = *(undefined1 *)((int)param_1 + 0x23);
       uStack_8 = *(undefined1 *)(param_1 + 9);
-      build_can_battery_status(&fStack_2c,&diag_meter_workbuf);
+      build_0x285_torque_word(&fStack_2c,&diag_meter_workbuf);
       build_telltale_frame(&diag_meter_workbuf,(undefined4 *)&DAT_0080a278);
       irq_disable_push_psw();
       can_decode_default_ccfc = (byte)diag_meter_workbuf;
@@ -33229,7 +33235,7 @@ void build_can_frame_0x80cd03(float *param_1)
       uStack_a = *(undefined1 *)((int)param_1 + 0x22);
       uStack_9 = *(undefined1 *)((int)param_1 + 0x23);
       uStack_8 = *(undefined1 *)(param_1 + 9);
-      build_can_battery_status(&fStack_2c,(undefined2 *)&cd03_decode_scratch);
+      build_0x285_torque_word(&fStack_2c,(undefined2 *)&cd03_decode_scratch);
       build_telltale_frame((undefined2 *)&cd03_decode_scratch,&meter_frame_scratch);
       irq_disable_push_psw();
       DAT_0080cd04 = (undefined1)cd03_decode_scratch._0_2_;
@@ -34227,10 +34233,10 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
              (char *)&gear_code,&DAT_0080d5ab,&DAT_0080d5d2,&DAT_0080d5d3,&DAT_0080d5e6,&power_demand_signal,
              &power_pack_voltage,(char *)&mode_command,&measured_power,&measured_power_hyst2,&overspeed_latch_d82e,
              &gear_pos2_enable,&shift_eco_enable,&drive_enable_latched,&power_source_select,&dtc_U1901_stage,
-             &fault_aggregate_d80c,&fault_aggregate_a,&DAT_0080df1e,(float *)&DAT_0080cf7c,&temp_value_cf80,
-             &ready_contactor_fb,&DAT_0080d603,&precharge_contactor_fb,&DAT_0080d605,&charging_contactor_fb_80d606,
-             &DAT_0080d607,&DAT_0080d608,&DAT_0080d609,&status_float_cf84,&DAT_0080cf88,&DAT_0080cf8c,&DAT_0080cf90,
-             &DAT_0080d60a,&charge_volt_a,&charge_volt_b);
+             &fault_aggregate_d80c,&fault_aggregate_a,&DAT_0080df1e,&torque_cmd_nm,&temp_value_cf80,&ready_contactor_fb,
+             &DAT_0080d603,&precharge_contactor_fb,&DAT_0080d605,&charging_contactor_fb_80d606,&DAT_0080d607,
+             &DAT_0080d608,&DAT_0080d609,&status_float_cf84,&DAT_0080cf88,&DAT_0080cf8c,&DAT_0080cf90,&DAT_0080d60a,
+             &charge_volt_a,&charge_volt_b);
   regen_torque_curve();
   mode4_condenser_gate();
   dtc_mirror();
@@ -38339,7 +38345,7 @@ void freezeframe_snapshot_b(void)
   DAT_0080e4e4 = (dtc_inhibit_bit_1 & 2) != 0;
   DAT_0080e4e5 = (dtc_inhibit_bit_2 & 2) != 0;
   DAT_0080e4e6 = (dtc_inhibit_bit_3 & 2) != 0;
-  DAT_0080da90 = DAT_0080cf7c;
+  DAT_0080da90 = torque_cmd_nm;
   DAT_0080e4e7 = mode_a_clear_flag;
   DAT_0080e4e8 = ready_contactor_fb;
   DAT_0080e4e9 = demand_permit_flag;
@@ -55546,7 +55552,8 @@ void reset_filter_states_7e638(void)
 
 //=== 0x0007e664 dtc_monitor_U1802 [NAMED] (calls=4)
 
-/* charging_contactor_fb + debounce, dtc_set_by_index(0x30) [conf: high] */
+/* U1802 = airbag communication line open (service manual). Input: P12.1 (gpio_input_latch_1a bit1, 0x80d6f9),
+   unmodelled on the bench [conf: high] */
 
 void dtc_monitor_U1802(void)
 

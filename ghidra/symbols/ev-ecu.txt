@@ -137,8 +137,8 @@
 
 # --- CAN message builders (TX) -----------------------------------------------
 0x0008a8c8  FUN  can_tx_staging                ; TX staging; calls the per-frame builders
-0x0002c8ac  FUN  build_0x285                   ; torque command (torque + 2000)
-0x0002ceb0  FUN  build_0x292                   ; safety torque command
+0x0002c8ac  FUN  build_0x285  ; inverter command: b0:b1 = motor torque * 10 + 2000 (Nm, from torque_cmd_nm), b2 = operating mode (0x14 in DRIVE). Bench-confirmed [conf: high]
+0x0002ceb0  FUN  build_0x292  ; safety torque command; built every pass but never sent on 9499A18206: set_data_valid forces tx_0x292_enable = 0 [conf: high]
 0x0002dc5c  FUN  build_0x695                   ; combination-meter energy gauge + telltale bits
 0x0002d53c  FUN  build_0x346                   ; range frame
 0x0002d208  FUN  build_0x308
@@ -166,9 +166,10 @@
 0x0080e607  DAT  mode_wake_flag          b  ; set by mode_step, cleared by mode_reset
 0x0080d55e  DAT  why_not_ready_code      b  ; 1..0x11 reason code
 0x0080c00c  DAT  data_valid              b  ; drive/diag-valid flag
+0x0080c00d  DAT  tx_0x292_enable  b  ; gate for sending 0x292; set_data_valid passes 0, so it is never sent on 9499A18206 [conf: high]
 
 # --- ready / precharge / inhibit ---------------------------------------------
-0x0080cf60  DAT  condenser_voltage       f  ; smooth-condenser HV (~380 = charged)
+0x0080cf60  DAT  condenser_voltage  f  ; smoothed ADC ch0 (time constant ~0.3 s). Reads ~15 at raw 0x333 and scales linearly; P0562 (system voltage LOW) fires below 9, so this may be the 12 V / DC-DC rail rather than HV [conf: low]
 0x0080e3b4  DAT  drive_inhibit           b  ; 1 = READY inhibited
 0x0080d817  DAT  drive_inhibit_latched   b  ; debounced drive inhibit (gates DRIVE)
 0x0080e3b7  DAT  inhibit_aggregate_b_out b
@@ -471,7 +472,7 @@
 0x0000b86c  FUN  fault_counter_bump  ; increment one of 4 fault counters by e0232 [conf: med]
 0x0000b8e0  FUN  dtc_monitor_P0604_wdog  ; watchdog/reset fault -> dtc_set_by_index(0x4a) [conf: high]
 0x0000b978  FUN  fault_lamp_output_set  ; drives fault-lamp GPIO 0x8080/0x8054 from 0xeac25 [conf: med]
-0x0000b9b0  FUN  eeprom_write_worker  ; EEPROM/NVM write+verify state machine [conf: med]
+0x0000b9b0  FUN  aps2_test_pulse_check  ; every 10th call raises P1.0 (grounds accelerator sensor 2, ADC ch5) and checks the reading drops; 10 failures -> P060B (A/D processing performance). Was eeprom_write_worker; the bench confirmed the pin effect [conf: high]
 0x0000bafc  FUN  timer_counter_inc_saturate  ; increments 0x80080a0 counter, saturates at wrap [conf: med]
 0x0000bb2c  FUN  fault_lamp_update  ; conditionally refreshes fault-lamp outputs [conf: med]
 0x0000bb48  FUN  adc_watchdog_flag  ; DAT_80080c8 bit0 -> sets fault bit 0x805424 [conf: med]
@@ -534,8 +535,8 @@
 0x00011b7c  FUN  uds_read_by_did_table  ; resolve DID->addr (flash/ram/SFR) copy to out [conf: med]
 0x00011cf4  FUN  flash_read_u16_banked  ; banked flash/RAM pointer resolve + read u16 [conf: med]
 0x00011de8  FUN  checksum_additive  ; additive byte-sum over buffer [conf: high]
-0x000123f8  FUN  gpio_p1_set_bit0  ; set P1DATA bit0 unless mode==2 [conf: med]
-0x00012428  FUN  gpio_clear_p1_bit0  ; clear P1DATA bit0 unless e0233==1 [conf: med]
+0x000123f8  FUN  aps2_test_pulse_on  ; P1DATA bit0 = 1: ground accelerator sensor 2 for the A/D self-test (was gpio_p1_set_bit0) [conf: high]
+0x00012428  FUN  aps2_test_pulse_off  ; P1DATA bit0 = 0 (was gpio_clear_p1_bit0) [conf: high]
 0x000124a0  FUN  peripheral_init_reset  ; zero timer/GPIO regs then ecu_reset [conf: high]
 0x000125a0  FUN  gpio_toggle_p4_watchdog  ; toggle P4 bit6 (external watchdog kick) [conf: high]
 0x000125bc  FUN  read_p4_bit6  ; read P4DATA bit6 GPIO input [conf: high]
@@ -549,7 +550,7 @@
 0x00013ad8  FUN  startup_event_enqueue  ; add entry to startup dispatch table [conf: med]
 0x00013e5c  FUN  can_bus_off_counter  ; count CAN comm faults, set DTC after 0x1d [conf: med]
 0x00013ea8  FUN  adc_watchdog_dtc  ; ADC-count watchdog, dtc_set_by_index(0x4b/0x4c) [conf: high]
-0x00013fa8  FUN  eeprom_wear_level_step  ; EEPROM read/write w/ FUN_0004db80, wear counter 0x808294 [conf: med]
+0x00013fa8  FUN  ic2_watchdog_check  ; IC2 (System LSI) watchdog step: checks the id-0x1e answer is c0/f0 and steps ic2_watchdog_counter (+3 good, -1 bad); resyncs it to the IC2-reported value + 3. Was eeprom_wear_level_step [conf: med]
 0x0001453c  FUN  odometer_event_counter  ; increment persistent counter 0x805480 w/ wrap [conf: med]
 0x000145e8  FUN  nvm_config_load  ; load NVM config block 0x805490 via FUN_0004dbac [conf: med]
 0x000145fc  FUN  nvm_signature_check  ; validate 0x805490 signature, reinit if bad [conf: med]
@@ -668,7 +669,7 @@
 0x0002765c  FUN  can0_reinit_sequencer  ; CAN0 mailbox reinit state machine (CAN0CNT, filters) [conf: med]
 0x00027928  FUN  set_flag_bcad_bit2  ; set bit2 of 0x80bcad [conf: high]
 0x00027930  FUN  speed_threshold_hysteresis  ; speed->count w/ hysteresis latch [conf: med]
-0x000279b8  FUN  can_rx_timeout_decrementer  ; decrements 0x80bcb4 17-slot timeout table, expiry cb [conf: med]
+0x000279b8  FUN  can0_periodic_tx_scheduler  ; 17 countdown slots (phases from 0xe59ee); at zero calls can0_tx_request(0xe59dc[k]) for periodic frame k; frame 4 (0x292) only if tx_0x292_enable. Was can_rx_timeout_decrementer [conf: high]
 0x00027b1c  FUN  diag_session_active  ; return 1 if diag session state 0x80BCAB==3 [conf: high]
 0x00027b30  FUN  can_bus_state_query  ; returns 0/1/2 bus state from DAT_80bcac + status [conf: med]
 0x00027b60  FUN  can0_reinit_reload  ; reset CAN0, reprogram filters, reload timers [conf: high]
@@ -818,7 +819,7 @@
 0x0002fd50  FUN  can_flag_report_build_c284  ; DAT_80b846 bit2 + data_valid gate, unpack 0x80bbfb [conf: med]
 0x0002fe10  FUN  clear_c290_block  ; zeroes c290/c291 decode block [conf: high]
 0x0002fe3c  FUN  decode_can_2bit_status  ; RX decode, data_valid gate, packs 2-bit fields bbdb.. [conf: high]
-0x000300b4  FUN  build_can_battery_status  ; encode float battery fields into CAN frame bytes [conf: med]
+0x000300b4  FUN  build_0x285_torque_word  ; encodes the commanded torque float into 0x285 b0:b1 (torque * 10 + 2000). Was build_can_battery_status [conf: med]
 0x000302c4  FUN  build_default_meter_frame  ; init meter/telltale frame defaults (2000,bits) [conf: med]
 0x00030408  FUN  build_telltale_frame  ; packs telltale/indicator bits via pack_telltale_bits/FUN_290f4 [conf: high]
 0x00030588  FUN  inv_status_field_scale  ; MISNOMER "cmu_temp": actually scales the 0x288/msgB inverter-status decoded struct into float outputs. Notably d010 = (byte at decoded+5 = 0x288 byte4) * e5b48(2.0) read UNSIGNED via *(byte*) -> inverter DC-link voltage (NOT a temperature). [conf: high]
@@ -1467,7 +1468,7 @@
 0x0007e4d8  FUN  reset_dtc_debounce_f298  ; reset debounce state block 0x80f298 [conf: med]
 0x0007e504  FUN  dtc_monitor_2f_debounce  ; debounce_counter + latch; DTC 0x2f; d514 [conf: high]
 0x0007e638  FUN  reset_filter_states_7e638  ; reset debounce/latch filter states block [conf: med]
-0x0007e664  FUN  dtc_monitor_U1802  ; charging_contactor_fb + debounce, dtc_set_by_index(0x30) [conf: high]
+0x0007e664  FUN  dtc_monitor_U1802  ; U1802 = airbag communication line open (service manual). Input: P12.1 (gpio_input_latch_1a bit1, 0x80d6f9), unmodelled on the bench [conf: high]
 0x0007e798  FUN  dtc_monitor_group_reset_g  ; reset latch objects group 0x80f25c [conf: med]
 0x0007e7bc  FUN  dtc_monitor_U1803  ; counter-based dual latch → dtc index 0x31 [conf: high]
 0x0007e914  FUN  dtc_monitors_reset_f238  ; reset debounce latches (DTC group) [conf: med]
@@ -1942,14 +1943,14 @@
 0x0080827e  DAT  isotp_idle_counter  h  ; ISO-TP idle-poll counter [conf: med]
 0x00808280  DAT  isotp_tx_loop_count  h  ; isotp-tx service loop counter [conf: med]
 0x0080828e  DAT  can_bus_off_count  h  ; CAN bus-off/comm-fault counter [conf: med]
-0x00808290  DAT  eeprom_wear_ctr_a  h  ; EEPROM wear-level counter a [conf: med]
-0x00808292  DAT  eeprom_wear_ctr_b  h  ; EEPROM wear-level counter b [conf: med]
+0x00808290  DAT  ic2_watchdog_reported  h  ; IC2 watchdog counter as last reported by the IC2 (0x33 answer). Was eeprom_wear_ctr_a [conf: med]
+0x00808292  DAT  ic2_watchdog_counter  h  ; IC2 watchdog counter: starts 0x0b, +3 per good exchange, -1 per bad; the IC2 must report it back in its 0x33 answers. Was eeprom_wear_ctr_b [conf: high]
 0x00808294  DAT  adc_watchdog_count  h  ; ADC-conversion watchdog counter [conf: high]
 0x00808296  DAT  eeprom_wear_peak  h  ; EEPROM wear peak counter [conf: med]
 0x00808298  DAT  adc_watchdog_count_b  h  ; second ADC watchdog counter [conf: high]
 0x0080829c  DAT  eeprom_status_word  h  ; EEPROM last-op status word [conf: med]
 0x0080829e  DAT  eeprom_flags  h  ; EEPROM state flags [conf: med]
-0x008082a0  DAT  eeprom_synced_gate  h  ; RAM validation-state flag (NOT a stored EEPROM value): read in eeprom_wear_level_step as `if (!=0x5a5a) re-poll System-LSI EEPROM status via 0x1e`. Ghidra XREF: 1 READ, ZERO writes -> permanently 0 in all analyzable execution; would become 0x5a5a only when the System-LSI reports the EEPROM synced. NOT on the physical EEPROM chip; not in the 0x804200 shadow. (was mislabeled "eeprom_magic (0x5a5a)" -> that name wrongly implied a chip-stored signature) [conf: med]
+0x008082a0  DAT  eeprom_synced_gate  h  ; RAM validation-state flag (NOT a stored EEPROM value): read in ic2_watchdog_check as `if (!=0x5a5a) re-poll System-LSI EEPROM status via 0x1e`. Ghidra XREF: 1 READ, ZERO writes -> permanently 0 in all analyzable execution; would become 0x5a5a only when the System-LSI reports the EEPROM synced. NOT on the physical EEPROM chip; not in the 0x804200 shadow. (was mislabeled "eeprom_magic (0x5a5a)" -> that name wrongly implied a chip-stored signature) [conf: med]
 0x0080a000  DAT  build_date_word  w  ; parsed firmware build-date word [conf: med]
 0x0080a004  DAT  build_time_word  w  ; parsed firmware build-time word [conf: med]
 0x0080a00c  DAT  eeprom_status_word_80a00c  w  ; EEPROM status/state [conf: high]
@@ -2141,7 +2142,8 @@
 0x0080b824  DAT  can0_tx_active_slot  b  ; CAN0 TX active mailbox slot [conf: med]
 0x0080b825  DAT  can0_active_mbx_idx  b  ; CAN0 mailbox index being programmed [conf: med]
 0x0080b826  DAT  can0_pending_count  b  ; CAN0 pending TX slot count [conf: med]
-0x0080b83a  DAT  can0_init_flag_c  b  ; CAN0 init flag [conf: med]
+0x0080b827  DAT  can0_tx_pending  b  ; 19 flags: CAN0 TX index waiting for the single TX mailbox (slot 0) [conf: high]
+0x0080b83a  DAT  can0_tx_inhibit  b  ; CAN0 TX inhibit mask: can0_tx_request refuses index i if this & 0xe57c7[i]. Was can0_init_flag_c [conf: med]
 0x0080b83c  DAT  isr_saved_psw  h  ; CAN ISR saved PSW [conf: high]
 0x0080b83e  DAT  can0_rx_msg_index  b  ; CAN0 RX message index [conf: high]
 0x0080b840  DAT  can0_rx_frame_ptr  w  ; ptr to CAN0 RX frame image [conf: high]
@@ -2208,9 +2210,9 @@
 0x0080bcab  DAT  can0_reinit_state  b  ; CAN0 reinit state machine [conf: high]
 0x0080bcac  DAT  can_rx_state  b  ; CAN RX state machine [conf: med]
 0x0080bcad  DAT  can0_reinit_evt  b  ; CAN0 reinit event flags [conf: high]
-0x0080bcb4  DAT  can_rx_timeout_table  h  ; 17-slot CAN RX timeout counters [conf: high]
+0x0080bcb4  DAT  can0_periodic_tx_countdown  h  ; 17 countdown slots for the periodic CAN0 frames. Was can_rx_timeout_table [conf: high]
 0x0080bcda  DAT  can_integrity_ctr  b  ; mailbox-integrity round counter [conf: med]
-0x0080bcdb  DAT  can_rx_timeout_init  b  ; CAN RX timeout-table init flag [conf: high]
+0x0080bcdb  DAT  can0_periodic_tx_init  b  ; countdown slots loaded from 0xe59ee. Was can_rx_timeout_init [conf: high]
 0x0080bce0  DAT  can0_reinit_cnt0  h  ; CAN0 reinit countdown 0 [conf: med]
 0x0080bce4  DAT  can0_reinit_cnt1  h  ; CAN0 reinit countdown 1 [conf: med]
 0x0080bce8  DAT  can0_reinit_errcnt0  b  ; CAN0 reinit error count 0 [conf: med]
@@ -2305,7 +2307,7 @@
 0x0080c174  DAT  dtc_snapshot_valid  b  ; dtc snapshot valid flag [conf: med]
 0x0080c180  DAT  charging_contactor_fb_raw  b  ; contactor feedback raw (copied to d6b9) [conf: high]
 0x0080c181  DAT  contactor_fb_c181  b  ; contactor feedback flag [conf: med]
-0x0080c184  DAT  battery_status_frame  h  ; built 0x285 battery-status image [conf: med]
+0x0080c184  DAT  tx_0x285_torque_word  h  ; 0x285 b0:b1: motor torque * 10 + 2000 (Nm). Was battery_status_frame [conf: high]
 0x0080c1b0  DAT  telltale_block1  h  ; telltale bitfield block 1 [conf: med]
 0x0080c1b2  DAT  meter_0x374_current  b  ; 0x374 current scaled value [conf: high]
 0x0080c1b3  DAT  meter_0x374_temp  b  ; 0x374 temperature scaled value [conf: high]
@@ -2489,6 +2491,7 @@
 0x0080cf6c  DAT  condenser_voltage_prev  f  ; previous condenser voltage (dv/dt) [conf: high]
 0x0080cf70  DAT  charge_voltage_cf70  f  ; charge-voltage monitor value [conf: med]
 0x0080cf78  DAT  dcdc_status_snapshot  b  ; DC-DC status latch [conf: med]
+0x0080cf7c  DAT  torque_cmd_nm  f  ; final motor torque command (Nm) -> 0x285; zero unless drive_enable_latched (gear D/E/B) and the other gates at 0xb05d0 hold [conf: high]
 0x0080cf80  DAT  temp_value_cf80  f  ; temperature/status float cf80 [conf: med]
 0x0080cf84  DAT  status_float_cf84  f  ; status snapshot float cf84 [conf: med]
 0x0080cf94  DAT  charge_volt_a  f  ; charge-group compare voltage a [conf: med]
