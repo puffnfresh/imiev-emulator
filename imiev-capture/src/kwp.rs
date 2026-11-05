@@ -261,10 +261,10 @@ pub fn state(status: u8) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DtcRecord {
     pub status: u8,
-    pub when_set: u16,
-    pub active_time: u16,
-    pub healing_cycles: u8,
-    pub since_set: u16,
+    pub odometer: u16,
+    pub accumulated_minutes: u16,
+    pub power_cycles: u8,
+    pub elapsed_minutes: u16,
     pub snapshot: Vec<u8>,
 }
 
@@ -272,13 +272,13 @@ impl std::fmt::Display for DtcRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "status {:02x} ({}), when set {:04x}, active time {}, healing cycles {}, since set {:04x}",
+            "status {:02x} ({}), odometer {:.0} km, accumulated {} min, power cycles {}, elapsed {} min",
             self.status,
             state(self.status),
-            self.when_set,
-            self.active_time,
-            self.healing_cycles,
-            self.since_set
+            f64::from(self.odometer) * 6.4,
+            self.accumulated_minutes,
+            self.power_cycles,
+            self.elapsed_minutes
         )
     }
 }
@@ -287,13 +287,13 @@ pub fn parse_dtc_record(code: u16, pdu: &[u8]) -> Option<Option<DtcRecord>> {
     let [hi, lo] = code.to_be_bytes();
     match Request::ReadDtcRecord(code).answer(pdu)? {
         [0] => Some(None),
-        &[1, h, l, status, s0, s1, a0, a1, healing_cycles, d0, d1, ref snapshot @ ..] if [h, l] == [hi, lo] => {
+        &[1, h, l, status, s0, s1, a0, a1, power_cycles, d0, d1, ref snapshot @ ..] if [h, l] == [hi, lo] => {
             Some(Some(DtcRecord {
                 status,
-                when_set: u16::from_be_bytes([s0, s1]),
-                active_time: u16::from_be_bytes([a0, a1]),
-                healing_cycles,
-                since_set: u16::from_be_bytes([d0, d1]),
+                odometer: u16::from_be_bytes([s0, s1]),
+                accumulated_minutes: u16::from_be_bytes([a0, a1]),
+                power_cycles,
+                elapsed_minutes: u16::from_be_bytes([d0, d1]),
                 snapshot: snapshot.to_vec(),
             }))
         }
@@ -413,14 +413,14 @@ mod tests {
         let pdu = [0x57, 0x01, 0xd8, 0x02, 0xe0, 0x37, 0xa5, 0x00, 0x02, 0x03, 0x00, 0x04, 0x00, 0x26, 0x03];
         let record = parse_dtc_record(0xd802, &pdu).unwrap().unwrap();
         assert_eq!(record.status, 0xe0);
-        assert_eq!(record.when_set, 0x37a5);
-        assert_eq!(record.active_time, 2);
-        assert_eq!(record.healing_cycles, 3);
-        assert_eq!(record.since_set, 4);
+        assert_eq!(record.odometer, 0x37a5);
+        assert_eq!(record.accumulated_minutes, 2);
+        assert_eq!(record.power_cycles, 3);
+        assert_eq!(record.elapsed_minutes, 4);
         assert_eq!(record.snapshot, [0x00, 0x26, 0x03]);
         assert_eq!(
             record.to_string(),
-            "status e0 (active), when set 37a5, active time 2, healing cycles 3, since set 0004"
+            "status e0 (active), odometer 91168 km, accumulated 2 min, power cycles 3, elapsed 4 min"
         );
         assert_eq!(parse_dtc_record(0x1a51, &[0x57, 0x00]), Some(None));
         assert_eq!(parse_dtc_record(0x1234, &[0x7f, 0x17, 0x12]), None);

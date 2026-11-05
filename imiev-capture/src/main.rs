@@ -14,7 +14,7 @@ use embedded_can::Frame as _;
 use imiev_capture::kwp::{self, Dtc, Ecu, IsoTpRx, Request, Rx, EV_ECU_RECORDS, IDENTIFICATION};
 use imiev_capture::openport::{Clock, Command, Reply, CAN_BAUD};
 use imiev_capture::usb::OpenPort;
-use imiev_capture::can;
+use imiev_capture::{can, item};
 
 const KWP_TIMEOUT: Duration = Duration::from_millis(500);
 const DUMP_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -49,8 +49,16 @@ enum Cmd {
         #[arg(long, default_value = "ev-ecu", value_parser = ecu_where(Ecu::can_clear))]
         ecu: Ecu,
     },
-    /// Read every data record, raw [default: the EV-ECU].
-    Data(EcuArgs),
+    /// Read and decode known data records [default: the EV-ECU].
+    Data {
+        #[command(flatten)]
+        ecus: EcuArgs,
+        /// Ask for every potential record, 00 to FF - not just the known values.
+        #[arg(long)]
+        all: bool,
+    },
+    /// List the actuator tests; never runs one [default: EV-ECU and BMU].
+    Actuators(EcuArgs),
     /// Read an ECU's 1 MB of memory into DIR (resumable).
     Dump(DumpArgs),
 }
@@ -63,7 +71,8 @@ fn main() {
         Cmd::Info(e) => info(e.or(&Ecu::ALL)),
         Cmd::Dtc(e) => dtc(&e.or(&Ecu::ALL), false),
         Cmd::Clear { ecu } => dtc(&[ecu], true),
-        Cmd::Data(e) => data(e.or(&[Ecu::EvEcu])),
+        Cmd::Data { ecus, all } => data(ecus.or(&[Ecu::EvEcu]), all),
+        Cmd::Actuators(e) => actuators(e.or(&[Ecu::EvEcu, Ecu::Bmu])),
         Cmd::Dump(args) => dump_memory(args),
     };
     if let Err(e) = result {
@@ -268,15 +277,51 @@ fn dtc(ecus: &[Ecu], clear: bool) -> Result<(), String> {
     })
 }
 
-fn data(ecus: Vec<Ecu>) -> Result<(), String> {
+fn data(ecus: Vec<Ecu>, all: bool) -> Result<(), String> {
     with_bus(|bus| {
         for ecu in ecus {
             println!("{}:", ecu.name());
-            for lid in 0..=0xff {
+            let variant = variant(bus, ecu);
+            let lids: Vec<u8> = match variant {
+                Some(v) if !all => v.records.iter().map(|(lid, _)| *lid).collect(),
+                _ => (0..=0xff).collect(),
+            };
+            for lid in lids {
                 let req = Request::ReadLocal(lid);
-                if let Some([_, record @ ..]) = req.answer(&bus.ask(ecu, req)?) {
-                    println!("  {lid:02x}: {}", hex(record));
+                let pdu = match bus.ask(ecu, req) {
+                    Ok(pdu) => pdu,
+                    Err(e) if bus.lost => return Err(e),
+                    Err(e) => {
+                        println!("  {lid:02x}: {e}");
+                        continue;
+                    }
+                };
+                match req.answer(&pdu) {
+                    Some([_, record @ ..]) => {
+                        println!("  {lid:02x}: {}", hex(record));
+                        if let Some(variant) = variant {
+                            print_items(variant.record(lid), &pdu);
+                        }
+                    }
+                    _ if variant.is_some() && !all => println!("  {lid:02x}: refused: {}", describe(&pdu)),
+                    _ => {}
                 }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn actuators(ecus: Vec<Ecu>) -> Result<(), String> {
+    with_bus(|bus| {
+        for ecu in ecus {
+            match variant(bus, ecu) {
+                Some(v) if v.actuators.is_empty() => println!("{}: no actuator tests", ecu.name()),
+                Some(v) => {
+                    println!("{} (diag version {:04x}):", ecu.name(), v.diag_version);
+                    v.actuators.iter().for_each(|(lid, name)| println!("  {lid:02x}: {name}"));
+                }
+                None => println!("{}: no MUT-III tables for it", ecu.name()),
             }
         }
         Ok(())
@@ -474,21 +519,29 @@ fn print_dtcs(bus: &mut Bus, ecu: Ecu, label: &str) -> Result<(), String> {
     if dtcs.is_empty() {
         println!("{} {label}: no DTCs", ecu.name());
     }
+    let variant = if dtcs.is_empty() { None } else { variant(bus, ecu) };
     for d in dtcs {
-        println!("{} {label}: {d}", ecu.name());
+        match item::dtc_description(d.code) {
+            Some(text) => println!("{} {label}: {d} {text}", ecu.name()),
+            None => println!("{} {label}: {d}", ecu.name()),
+        }
         if ecu.can_read_dtc_record() {
-            print_freeze_frame(bus, ecu, d)?;
+            print_freeze_frame(bus, ecu, d, variant)?;
         }
     }
     Ok(())
 }
 
-fn print_freeze_frame(bus: &mut Bus, ecu: Ecu, dtc: Dtc) -> Result<(), String> {
+fn print_freeze_frame(bus: &mut Bus, ecu: Ecu, dtc: Dtc, variant: Option<&item::Variant>) -> Result<(), String> {
     let pdu = bus.ask(ecu, Request::ReadDtcRecord(dtc.code))?;
-    match kwp::parse_dtc_record(dtc.code, &pdu) {
-        None => println!("  freeze frame: {} refused ReadDtcRecord: {}", ecu.name(), describe(&pdu)),
-        Some(None) => println!("  no freeze frame"),
-        Some(Some(record)) => {
+    match (kwp::parse_dtc_record(dtc.code, &pdu), variant) {
+        (None, _) => println!("  freeze frame: {} refused ReadDtcRecord: {}", ecu.name(), describe(&pdu)),
+        (Some(None), _) => println!("  no freeze frame"),
+        (Some(Some(record)), Some(variant)) => {
+            println!("  freeze frame: status {:02x} ({})", record.status, kwp::state(record.status));
+            print_items(variant.freeze_frame(), &pdu);
+        }
+        (Some(Some(record)), None) => {
             println!("  freeze frame: {record}");
             for (i, row) in record.snapshot.chunks(16).enumerate() {
                 println!("    {:02x}: {}", i * 16, hex(row));
@@ -496,6 +549,30 @@ fn print_freeze_frame(bus: &mut Bus, ecu: Ecu, dtc: Dtc) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn print_items(items: impl Iterator<Item = &'static item::Item>, pdu: &[u8]) {
+    for item in items {
+        if let Some(value) = item.value(pdu) {
+            println!("    {}: {value}", item.name);
+        }
+    }
+}
+
+fn variant(bus: &mut Bus, ecu: Ecu) -> Option<&'static item::Variant> {
+    if !item::covers(ecu) {
+        return None;
+    }
+    let pdu = bus.ask(ecu, Request::Identify(0x87)).ok()?;
+    let Some(version) = item::diag_version(&pdu) else {
+        eprintln!("{}: no diag version in 1A 87 ({}); showing raw bytes", ecu.name(), describe(&pdu));
+        return None;
+    };
+    let variant = item::variant(ecu, version);
+    if variant.is_none() {
+        eprintln!("{}: diag version {version:04x} has no MUT-III tables; showing raw bytes", ecu.name());
+    }
+    variant
 }
 
 struct Bus {
