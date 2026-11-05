@@ -242,4 +242,5 @@ fn imiev_holds_drive_under_torque() {
     ] {
         assert!(!dtcs.iter().any(|d| d == dtc), "{dtc}: {why}");
     }
+    assert!(dtcs.is_empty(), "DTCs confirmed while driving: {dtcs:?}");
 }
