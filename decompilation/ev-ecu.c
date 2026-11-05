@@ -18564,6 +18564,145 @@ undefined4 const_return_one(void)
 }
 
 
+//=== 0x0001d498 airbag_line_sample [NAMED] (calls=0)
+
+/* 800 Hz: shifts P12.1 into one of 8 phase registers (0x80b7ce..), detects the start bit (3 low then high) [conf: high]
+    */
+
+void airbag_line_sample(int param_1)
+
+{
+  short sVar1;
+  ushort uVar2;
+  
+  DAT_0080b7cc = (P12DATA >> 1 & 1) == 1;
+  uVar2 = (ushort)(byte)DAT_0080b7cc;
+  sVar1 = (&DAT_0080b7ce)[param_1];
+  (&DAT_0080b7ce)[param_1] = sVar1 << 1 | (ushort)(byte)DAT_0080b7cc;
+  if (((sVar1 << 1 & 0xfU | uVar2) == 1) && (DAT_0080b7e7 == '\0')) {
+    DAT_0080b7e6 = (undefined1)param_1;
+    DAT_0080b7e7 = '\x01';
+  }
+  if (DAT_0080b7e7 != '\0') {
+    DAT_0080b7e8 = DAT_0080b7e8 + '\x01';
+  }
+  return;
+}
+
+
+//=== 0x0001d50c airbag_frame_decode [NAMED] (calls=2)
+
+/* every 10 ms: majority-votes 10 bits from the phase registers; airbag ECU frame = 100 baud, idle low, high start, 4
+   data + odd parity, data 0x5 no crash / 0xA crash [conf: high] */
+
+void airbag_frame_decode(void)
+
+{
+  ushort uVar1;
+  short sVar2;
+  int iVar3;
+  byte bVar4;
+  uint uVar5;
+  ushort *puVar6;
+  byte bVar7;
+  undefined2 *puVar8;
+  byte bVar9;
+  ushort *puVar10;
+  uint uVar11;
+  uint uVar12;
+  ushort local_1c [8];
+  undefined2 local_c;
+  byte bStack_6;
+  byte bStack_5;
+  
+  irq_disable_push_psw();
+  bStack_5 = DAT_0080b7e8;
+  bStack_6 = DAT_0080b7e6;
+  puVar10 = &DAT_0080b7ce;
+  puVar6 = local_1c;
+  for (bVar9 = 0; bVar9 < 8; bVar9 = bVar9 + 1) {
+    *puVar6 = ~*puVar10;
+    puVar6 = puVar6 + 1;
+    puVar10 = puVar10 + 1;
+  }
+  crit_section_exit();
+  uVar11 = 0;
+  uVar12 = uVar11;
+  if (0x37 < bStack_5) {
+    irq_disable_push_psw();
+    DAT_0080b7e7 = (byte)uVar11;
+    uVar12 = uVar11;
+    DAT_0080b7e8 = DAT_0080b7e7;
+    crit_section_exit();
+    for (; (uVar11 & 0xff) < bStack_5 - 0x38; uVar11 = uVar11 + 1) {
+      uVar5 = bStack_6 + uVar11 & 7;
+      local_1c[uVar5] = local_1c[uVar5] >> 1;
+    }
+    puVar6 = &local_c;
+    puVar10 = &DAT_0080b7de;
+    for (uVar11 = 0; (uVar11 & 0xff) < 3; uVar11 = uVar11 + 1) {
+      uVar1 = local_1c[(uint)bStack_6 + (uVar11 & 0xff) + 3 & 7];
+      *puVar6 = uVar1;
+      *puVar10 = uVar1;
+      puVar10 = puVar10 + 1;
+      puVar6 = puVar6 + 1;
+    }
+    for (bVar9 = 0; bVar9 < 10; bVar9 = bVar9 + 1) {
+      bVar4 = 0;
+      puVar8 = &local_c;
+      iVar3 = 0;
+      for (bVar7 = 0; bVar7 < 3; bVar7 = bVar7 + 1) {
+        bVar4 = bVar4 + (*(byte *)((int)puVar8 + 1) & 1);
+        *(ushort *)((int)&local_c + iVar3) = *(ushort *)((int)&local_c + iVar3) >> 1;
+        puVar8 = puVar8 + 1;
+        iVar3 = iVar3 + 2;
+      }
+      uVar12 = (uVar12 & 0xffff) >> 1;
+      if (1 < bVar4) {
+        uVar12 = uVar12 | 0x8000;
+      }
+    }
+  }
+  DAT_0080b7e4 = (short)uVar12;
+  if ((uVar12 & 0xf000) == 0xe000) {
+    airbag_frame_status = airbag_frame_status & 0xffbf;
+    sVar2 = airbag_frame_status;
+    if ((uVar12 & 0x40) == 0x40) {
+      uVar11 = 0x800;
+      bVar9 = 0;
+      for (bVar4 = 0; bVar4 < 5; bVar4 = bVar4 + 1) {
+        if ((uVar12 & uVar11) != 0) {
+          bVar9 = bVar9 + 1;
+        }
+        uVar11 = uVar11 >> 1;
+      }
+      if ((bool)(bVar9 & 1)) {
+        airbag_frame_status = airbag_frame_status | 8;
+        if ((uVar12 & 0xf00) == 0xa00) {
+          airbag_frame_status = sVar2 | 9;
+        }
+        else if ((uVar12 & 0xf00) != 0x500) {
+          airbag_frame_status = sVar2 | 0x88;
+        }
+      }
+      else {
+        airbag_frame_status = airbag_frame_status | 0x20;
+      }
+    }
+    else {
+      airbag_frame_status = airbag_frame_status | 0x10;
+    }
+  }
+  else {
+    airbag_frame_status = airbag_frame_status & 0xff46U | 0x40;
+  }
+  if ((airbag_frame_status & 8U) != 0) {
+    status_byte_b7ec = (byte)(uVar12 >> 8) & 0xf;
+  }
+  return;
+}
+
+
 //=== 0x0001d744 FUN_0001d744 (calls=0)
 
 void FUN_0001d744(void)
@@ -18594,18 +18733,17 @@ void FUN_0001d75c(void)
 }
 
 
-//=== 0x0001d760 read_status_bits_b7ea [NAMED] (calls=0)
+//=== 0x0001d760 read_airbag_frame_status [NAMED] (calls=0)
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* export 3 status bits from 0x80b7ea [conf: med] */
+/* exports airbag_frame_status bits to the U1803..U1806 monitors. Was read_status_bits_b7ea [conf: high] */
 
-void read_status_bits_b7ea(undefined4 *param_1)
+void read_airbag_frame_status(undefined4 *param_1)
 
 {
   if (param_1 != (undefined4 *)0x0) {
-    *(bool *)*param_1 = (_status_bits_b7ea & 8) != 0;
-    *(bool *)param_1[1] = (_status_bits_b7ea & 0x10) != 0;
-    *(bool *)param_1[2] = (_status_bits_b7ea & 0x20) != 0;
+    *(bool *)*param_1 = (airbag_frame_status & 8U) != 0;
+    *(bool *)param_1[1] = (airbag_frame_status & 0x10U) != 0;
+    *(bool *)param_1[2] = (airbag_frame_status & 0x20U) != 0;
   }
   return;
 }
@@ -55553,8 +55691,8 @@ void reset_filter_states_7e638(void)
 
 //=== 0x0007e664 dtc_monitor_U1802 [NAMED] (calls=4)
 
-/* U1802 = airbag communication line open (service manual). Input: P12.1 (gpio_input_latch_1a bit1, 0x80d6f9),
-   unmodelled on the bench [conf: high] */
+/* U1802 = airbag communication line open (service manual). Input: P12.1 (gpio_input_latch_1a bit1, 0x80d6f9), the
+   airbag ECU's 100 baud crash-signal line (see airbag_frame_decode) [conf: high] */
 
 void dtc_monitor_U1802(void)
 
@@ -57151,7 +57289,7 @@ void pack_status_bits_d50e(void)
   local_14 = &dtc_U1804_stage_a;
   pbStack_10 = &charge_gate_d718;
   pbStack_c = &dtc_U1804_stage_b;
-  read_status_bits_b7ea(&local_14);
+  read_airbag_frame_status(&local_14);
   DAT_0080d50e = charge_gate_d718 * '\x02' + dtc_U1804_stage_a + dtc_U1804_stage_b * '\x04' + DAT_0080ab79 +
                  DAT_0080ab7a + DAT_0080ab7b + DAT_0080ab7c + DAT_0080ab7d;
   return;
