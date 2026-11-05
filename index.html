@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.8.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>i-MiEV emulator</title>
+  <style>
+  body { font-family: sans-serif; margin: 1rem; max-width: 60rem; }
+  fieldset { margin: 0 0 1rem; }
+  .mono { font-family: monospace; white-space: pre; }
+  table { border-collapse: collapse; }
+  td, th { text-align: left; padding: 0.1rem 0.6rem 0.1rem 0; font-weight: normal; }
+  ul { margin: 0.2rem 0; padding-left: 1.2rem; }
+  [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <p id="status" class="mono">loading…</p>
+  <fieldset>
+    <legend>Gear</legend> <label><input type="radio" name="gear" value="0" checked> Park</label> <label><input type="radio" name="gear" value="1">
+    Reverse</label> <label><input type="radio" name="gear" value="2"> Neutral</label> <label><input type="radio" name="gear" value="3"> Drive</label>
+    <label><input type="radio" name="gear" value="4"> Eco</label> <label><input type="radio" name="gear" value="5"> Comfort</label>
+  </fieldset>
+  <fieldset id="accel-box" hidden="">
+    <legend>Accelerator</legend> <input type="range" id="accel" min="0" max="100" value="0" step="1"> <output id="accel-val">0</output>%
+  </fieldset>
+  <fieldset>
+    <legend>EV-ECU</legend>
+    <table>
+      <tr>
+        <th>Operating mode</th>
+        <td id="op-mode" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>Engage stage</th>
+        <td id="mode-code" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>Torque request</th>
+        <td id="torque" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>0x285 command</th>
+        <td id="f285" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>0x288 inverter</th>
+        <td id="f288" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>0x298 inv. torque</th>
+        <td id="f298" class="mono">—</td>
+      </tr>
+    </table>
+  </fieldset>
+  <fieldset>
+    <legend>BMU battery telemetry</legend>
+    <table>
+      <tr>
+        <th>0x373</th>
+        <td id="f373" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>0x374</th>
+        <td id="f374" class="mono">—</td>
+      </tr>
+      <tr>
+        <th>0x375</th>
+        <td id="f375" class="mono">—</td>
+      </tr>
+    </table>
+  </fieldset>
+  <fieldset>
+    <legend>DTCs — EV-ECU</legend>
+    <ul id="dtc-ecu">
+      <li>none</li>
+    </ul>
+  </fieldset>
+  <fieldset>
+    <legend>DTCs — BMU</legend>
+    <ul id="dtc-bmu">
+      <li>none</li>
+    </ul>
+  </fieldset>
+  <script type="module">
+  import init, { Sim } from './pkg/imiev_wasm.js';
+
+  const OP_MODES = { 0: 'REST', 2: 'PRECHARGE', 3: 'READY', 4: 'DRIVE', 5: 'SHUTDOWN' };
+  const STEP_CHUNK = 1_000_000;
+
+  const $ = (id) => document.getElementById(id);
+
+  function hex(bytes) {
+  if (!bytes) return '—';
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  function fillList(el, items) {
+  el.replaceChildren(...(items.length ? items : ['none']).map((t) => {
+    const li = document.createElement('li');
+    li.textContent = t;
+    return li;
+  }));
+  }
+
+  init().then(() => {
+  const sim = new Sim();
+  let steps = 0;
+
+  const accelBox = $('accel-box');
+  const accel = $('accel');
+  for (const r of document.querySelectorAll('input[name=gear]')) {
+    r.addEventListener('change', () => {
+      const g = Number(r.value);
+      sim.set_gear(g);
+      const park = g === 0;
+      accelBox.hidden = park;
+      if (park) { accel.value = 0; $('accel-val').textContent = '0'; sim.set_pedal(0); }
+    });
+  }
+  accel.addEventListener('input', () => {
+    $('accel-val').textContent = accel.value;
+    sim.set_pedal(Number(accel.value));
+  });
+
+  function render() {
+    const mode = sim.ecu_op_mode();
+    $('status').textContent = `running — ${steps.toLocaleString()} steps`;
+    $('op-mode').textContent = `${OP_MODES[mode] ?? '?'} (${mode})`;
+    $('mode-code').textContent = sim.ecu_mode_code();
+    $('torque').textContent = sim.ecu_torque_request();
+    $('f285').textContent = hex(sim.bus_last(0x285));
+    $('f288').textContent = hex(sim.bus_last(0x288));
+    $('f298').textContent = hex(sim.bus_last(0x298));
+    $('f373').textContent = hex(sim.bus_last(0x373));
+    $('f374').textContent = hex(sim.bus_last(0x374));
+    $('f375').textContent = hex(sim.bus_last(0x375));
+    fillList($('dtc-ecu'), sim.ecu_dtcs());
+    fillList($('dtc-bmu'), sim.bmu_dtcs());
+  }
+
+  function frame() {
+    sim.run(STEP_CHUNK);
+    steps += STEP_CHUNK;
+    render();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  });
+  </script>
+</body>
+</html>
