@@ -21,6 +21,8 @@ const CAN_DLC_MAX: usize = 8;
 
 const BUS_PUMP_INTERVAL: u64 = 10_000;
 
+pub const CYCLES_PER_SECOND: u64 = 160_000_000;
+
 const ECU_MODE_STATUS_CODE: u32 = 0x0080_e595; // drive-engagement handshake stage (climbs to 4 then 5)
 const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
 const ECU_TORQUE_REQUEST: u32 = 0x0080_d384; // EV-ECU motor torque request (signed 16-bit)

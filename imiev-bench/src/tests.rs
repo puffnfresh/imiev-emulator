@@ -199,7 +199,8 @@ fn imiev_selecting_drive_engages_and_moves() {
         OP_MODE_DRIVE,
         "never reached DRIVE to test motion"
     );
-    let kmh0 = sim.bus().last(0x412).map(|f| f.data[1]).unwrap_or(0);
+    let rpm = |sim: &Simulation| sim.bus().last(0x298).map_or(0, |f| u16::from_be_bytes([f.data[6], f.data[7]]) as i32 - 10_000);
+    let rpm0 = rpm(&sim);
     sim.set_gear(Gear::Drive);
     sim.set_pedal(60.0);
     sim.run(20_000_000);
@@ -208,8 +209,8 @@ fn imiev_selecting_drive_engages_and_moves() {
         OP_MODE_DRIVE,
         "selecting Drive collapsed the operating mode (handshake broke)"
     );
-    let kmh1 = sim.bus().last(0x412).map(|f| f.data[1]).unwrap_or(0);
-    assert!(kmh1 > kmh0, "vehicle did not accelerate after selecting Drive ({kmh0} -> {kmh1} km/h)");
+    let rpm1 = rpm(&sim);
+    assert!(rpm1 > rpm0, "vehicle did not accelerate after selecting Drive ({rpm0} -> {rpm1} rpm)");
 }
 
 #[test]

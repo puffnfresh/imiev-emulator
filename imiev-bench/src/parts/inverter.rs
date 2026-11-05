@@ -36,7 +36,7 @@ const ECU_TORQUE_ID: u16 = 0x285; // b0:b1 = commanded motor torque * 10 + 2000 
 const TORQUE_OFFSET: f32 = 2000.0;
 const TORQUE_PER_BIT: f32 = 0.1; // Nm
 const BRAKE_FORCE: f32 = 3500.0; // N at full brake
-pub const VEHICLE_DT: f32 = 0.01;
+pub const VEHICLE_DT: f32 = crate::BUS_PUMP_INTERVAL as f32 / crate::CYCLES_PER_SECOND as f32;
 
 const INV_RPM_ID: u16 = 0x288; // b0:b1 const 0x07D0, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
 const INV_TORQUE_ID: u16 = 0x298;
@@ -118,6 +118,10 @@ impl Inverter {
 mod tests {
     use super::*;
 
+    fn steps(seconds: f32) -> u32 {
+        (seconds / VEHICLE_DT) as u32
+    }
+
     fn commanding(nm: f32) -> CanBus {
         let mut bus = CanBus::default();
         let word = (nm / TORQUE_PER_BIT + TORQUE_OFFSET) as u16;
@@ -131,7 +135,7 @@ mod tests {
         let mut inv = Inverter::default();
         let bus = commanding(60.0);
         assert_eq!(Inverter::commanded_torque(&bus), 60.0);
-        for _ in 0..500 {
+        for _ in 0..steps(3.0) {
             inv.integrate(&bus, 0.0, VEHICLE_DT);
         }
         assert!(inv.kmh() > 5.0, "car did not accelerate under drive torque");
@@ -142,7 +146,7 @@ mod tests {
     fn no_torque_command_leaves_it_at_rest() {
         let mut inv = Inverter::default();
         for bus in [CanBus::default(), commanding(0.0)] {
-            for _ in 0..500 {
+            for _ in 0..steps(3.0) {
                 inv.integrate(&bus, 0.0, VEHICLE_DT);
             }
         }
@@ -154,12 +158,12 @@ mod tests {
     fn braking_brings_it_back_to_rest() {
         let mut inv = Inverter::default();
         let bus = commanding(60.0);
-        for _ in 0..500 {
+        for _ in 0..steps(3.0) {
             inv.integrate(&bus, 0.0, VEHICLE_DT);
         }
         assert!(inv.kmh() > 5.0);
         let coasting = commanding(0.0);
-        for _ in 0..2000 {
+        for _ in 0..steps(10.0) {
             inv.integrate(&coasting, 1.0, VEHICLE_DT);
         }
         assert_eq!(inv.kmh(), 0.0);
