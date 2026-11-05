@@ -149,14 +149,13 @@ impl Simulation {
             .with_adc_env(BMU_BOOT_ADC)
             .with_part(Box::new(Cmu::default()))
             .with_local_part(Box::new(Eeprom::default()));
-        let mut ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
+        let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
             .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(Contactor))
             .with_part(Box::new(AcRelay))
             .with_local_part(Box::new(Ic2Companion::default()))
             .with_local_part(Box::new(Can0RxIsr::default()));
-        ev_ecu.system_mut().configure_nvm_done_signal(0x0000_b9b0, 0x0080_8067, 0x02);
         Simulation {
             bmu,
             ev_ecu,

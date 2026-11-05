@@ -15,6 +15,8 @@ const RELAY_SENSE_PORT: u32 = 0x0080_0700; // P0DATA
 const RELAY_SENSE_BIT: u8 = 0x40; // P0.6 = EV-control-relay-commanded-on sense
 const P1_KEY_PORT: u32 = 0x0080_0701; // P1DATA
 const P1_KEY_BIT: u8 = 0x20; // P1.5, asserted with the key
+const APS_TEST_PORT: u32 = 0x0080_0701; // P1DATA
+const APS_TEST_BIT: u8 = 0x01; // P1.0 output: a self-test pulse for accelerator sensor 2
 const CHARGE_DETECT_PORT: u32 = 0x0080_0703; // P3DATA
 const CHARGE_DETECT_BIT: u8 = 0x02; // P3.1
 
@@ -71,7 +73,9 @@ impl Part for DriverControls {
         // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.
         let main = pedal_raw(self.pedal_pct, APS_RELEASED_RAW, APS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_1_SIGNAL, main);
-        chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_2_SIGNAL, main / 2);
+        let test_pulse = chip.gpio_output(APS_TEST_PORT) & APS_TEST_BIT != 0;
+        let sub = if test_pulse { 0 } else { main / 2 };
+        chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_2_SIGNAL, sub);
         let brake = pedal_raw(self.brake_pct, BPS_RELEASED_RAW, BPS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::BRAKE_SIGNAL, brake);
     }

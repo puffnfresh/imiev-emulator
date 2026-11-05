@@ -164,14 +164,14 @@ fn imiev_ev_ecu_reaches_and_holds_drive() {
 }
 
 #[test]
-fn imiev_nvm_selftest_does_not_confirm_p060b() {
-    const DTC_P060B: u32 = 0x0080_4a48; // fault-flag idx 72; bit1 = confirmed
+fn imiev_aps_test_pulse_does_not_confirm_p060b() {
+    const DTC_P060B: u32 = 0x0080_4a48;
     let mut sim = Simulation::imiev();
-    sim.run(400_000_000); // well past where P060B confirmed without the done-signal (~350M)
+    sim.run(400_000_000);
     assert_eq!(
         sim.ev_ecu().system().peek(DTC_P060B, 1) & 0x02,
         0,
-        "P060B (internal-NVM self-test) confirmed — the flash-controller done-signal is not modeled"
+        "P060B confirmed: accelerator sensor 2 did not drop during the P1.0 test pulse"
     );
 }
 
