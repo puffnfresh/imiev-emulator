@@ -19,6 +19,11 @@ fn main_aux_sense(coils: u8) -> u8 {
     (((coils >> 6) & 1) << 2) | (((coils >> 7) & 1) << 3)
 }
 
+/// CNT- (P1.6) is commanded closed.
+pub fn cnt_minus_closed(chip: &System) -> bool {
+    chip.gpio_output(COIL_PORT) & 0x40 != 0
+}
+
 impl Part for Contactor {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         let sense = main_aux_sense(chip.gpio_output(COIL_PORT));

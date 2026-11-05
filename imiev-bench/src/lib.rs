@@ -254,11 +254,7 @@ impl Simulation {
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
         }
-        let ecu = ev_ecu.system();
-        let code = ecu.peek(ECU_MODE_STATUS_CODE, 1);
-        let op_mode = ecu.peek(EV_ECU_OPERATING_MODE, 1);
-        inverter.drive_dclink = code >= 4 || op_mode >= 4;
-        inverter.engaging = code >= 4 && op_mode < 4;
+        inverter.hv_connected = cnt_minus_closed(ev_ecu.system());
         inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);
         tx.extend(inverter.frames(bus));
         for f in &tx {
