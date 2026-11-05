@@ -1738,9 +1738,8 @@ impl crate::item::Reading for CondenserVoltage {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlPowerSupply(pub crate::db::units::Volts);
 
-pub(crate) static CONTROL_POWER_SUPPLY: [Item; 3] = [
+pub(crate) static CONTROL_POWER_SUPPLY: [Item; 2] = [
     Item { name: "Control power supply", pos: 33, len: 1, bits: None, unit: Unit::Volts, conv: Conv::Linear { factor: 0.1, offset: 0.0, decimals: 1 } },
-    Item { name: "Control power supply", pos: 10, len: 1, bits: None, unit: Unit::Volts, conv: Conv::Linear { factor: 0.02, offset: 0.0, decimals: 2 } },
     Item { name: "Control power supply", pos: 12, len: 1, bits: None, unit: Unit::Volts, conv: Conv::Linear { factor: 0.1, offset: 0.0, decimals: 1 } },
 ];
 
@@ -1748,8 +1747,25 @@ impl crate::item::Reading for ControlPowerSupply {
     const ECU: Ecu = Ecu::EvEcu;
     const AT: &'static [At] = &[
         At { versions: &[0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &CONTROL_POWER_SUPPLY[0] },
-        At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x03), item: &CONTROL_POWER_SUPPLY[1] },
-        At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &CONTROL_POWER_SUPPLY[2] },
+        At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &CONTROL_POWER_SUPPLY[1] },
+    ];
+    fn decode(value: &Value) -> Option<Self> {
+        value.number().map(|n| Self(crate::db::units::Volts(n)))
+    }
+}
+
+/// Control power supply
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlPowerSupplyDivided(pub crate::db::units::Volts);
+
+pub(crate) static CONTROL_POWER_SUPPLY_DIVIDED: [Item; 1] = [
+    Item { name: "Control power supply", pos: 10, len: 1, bits: None, unit: Unit::Volts, conv: Conv::Linear { factor: 0.02, offset: 0.0, decimals: 2 } },
+];
+
+impl crate::item::Reading for ControlPowerSupplyDivided {
+    const ECU: Ecu = Ecu::EvEcu;
+    const AT: &'static [At] = &[
+        At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x03), item: &CONTROL_POWER_SUPPLY_DIVIDED[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
         value.number().map(|n| Self(crate::db::units::Volts(n)))

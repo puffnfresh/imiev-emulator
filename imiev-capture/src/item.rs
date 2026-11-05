@@ -297,4 +297,17 @@ mod tests {
         assert_eq!(old.locate::<ShiftPosition>(), None);
         assert_eq!(variant(Ecu::EvEcu, 0x0100).unwrap().locate::<ShiftPosition>(), Some(Source::FreezeFrame));
     }
+
+    #[test]
+    fn separates_the_divided_control_power_supply() {
+        use crate::db::datalist::ev_ecu::{ControlPowerSupply, ControlPowerSupplyDivided};
+        use crate::db::units::Volts;
+        let v = variant(Ecu::EvEcu, 0x0100).unwrap();
+        let mut record = vec![0x61, 0x03];
+        record.resize(64, 0);
+        record[10] = 0xC8;
+        assert_eq!(v.get::<ControlPowerSupplyDivided>(&record), Ok(ControlPowerSupplyDivided(Volts(4.0))));
+        assert_eq!(v.get::<ControlPowerSupply>(&record), Err(ReadError::WrongAnswer));
+        assert_eq!(v.locate::<ControlPowerSupply>(), Some(Source::Record(0x20)));
+    }
 }
