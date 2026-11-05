@@ -153,6 +153,10 @@ impl System {
         self.mem.ic2_deliver_rx(bytes);
     }
 
+    pub fn ic2_take_tx(&mut self) -> Vec<u8> {
+        self.mem.ic2.take_tx_bytes()
+    }
+
     pub fn ic2_rx_pending(&self) -> bool {
         self.mem.ic2.rx_pending()
     }

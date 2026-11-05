@@ -29,6 +29,7 @@ pub struct Ic2 {
     s2rcnt: u8,
     tx_event: bool, // a byte has finished clocking out of S2TXB (TX-complete)
     tx_latency: u32, // cycles remaining before the in-flight TX byte completes
+    tx_bytes: Vec<u8>, // bytes sent to the companion chip
     rx_armed: bool, // firmware armed DMA5 to receive the next answer
     dm5da: u16,     // where DMA5 writes the answer
     rx_buf: [u8; 8],
@@ -55,6 +56,10 @@ impl Ic2 {
                 self.rx_ready = true;
             }
         }
+    }
+
+    pub fn take_tx_bytes(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.tx_bytes)
     }
 
     pub fn take_tx_event(&mut self) -> bool {
@@ -125,7 +130,10 @@ impl Peripheral for Ic2 {
             SI23ST => self.si23st &= v as u8,
             DM59ITST => self.dm59itst &= v as u8,
             S2RCNT => self.s2rcnt = (v as u8) & !RX_ERROR, // never leave RX-error latched
-            S2TXB | S2TXB_LO => self.tx_latency = TX_LATENCY, // begin clocking a byte out
+            S2TXB | S2TXB_LO => {
+                self.tx_bytes.push(v as u8);
+                self.tx_latency = TX_LATENCY;
+            }
             DM5CNT0 if v == DMA_ARM_CMD => self.rx_armed = true,
             DM5DA if size == 2 => self.dm5da = v as u16,
             DM5DA => self.dm5da = (self.dm5da & 0x00ff) | ((v as u16 & 0xff) << 8),
@@ -162,6 +170,15 @@ mod tests {
         ic2.tick(TX_LATENCY as u64);
         assert!(ic2.take_tx_event());
         assert!(!ic2.take_tx_event(), "event is one-shot");
+    }
+
+    #[test]
+    fn transmitted_bytes_are_kept_for_the_companion() {
+        let mut ic2 = Ic2::new();
+        ic2.write(S2TXB, 2, 0x0055);
+        ic2.write(S2TXB_LO, 1, 0x10);
+        assert_eq!(ic2.take_tx_bytes(), [0x55, 0x10]);
+        assert!(ic2.take_tx_bytes().is_empty());
     }
 
     #[test]
