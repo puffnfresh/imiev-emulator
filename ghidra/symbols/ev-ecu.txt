@@ -169,7 +169,7 @@
 0x0080c00d  DAT  tx_0x292_enable  b  ; gate for sending 0x292; set_data_valid passes 0, so it is never sent on 9499A18206 [conf: high]
 
 # --- ready / precharge / inhibit ---------------------------------------------
-0x0080cf60  DAT  condenser_voltage  f  ; smoothed ADC ch0 (time constant ~0.3 s). Reads ~15 at raw 0x333 and scales linearly; P0562 (system voltage LOW) fires below 9, so this may be the 12 V / DC-DC rail rather than HV [conf: low]
+0x0080cf60  DAT  condenser_voltage  f  ; smoothed ADC ch0 (time constant ~0.3 s). Reads ~15 at raw 0x333 and scales linearly; P0562 (system voltage LOW) fires below 9, so this most likely the 12 V rail: on a real car 0x285 b4 (this * 10) reads ~11.8 before the DC link charges and ~14.5 once the DC-DC runs [conf: med]
 0x0080e3b4  DAT  drive_inhibit           b  ; 1 = READY inhibited
 0x0080d817  DAT  drive_inhibit_latched   b  ; debounced drive inhibit (gates DRIVE)
 0x0080e3b7  DAT  inhibit_aggregate_b_out b
@@ -182,6 +182,7 @@
 0x0080ae16  DAT  shift_input_latch          ; GPIO shift-pin input latch
 0x0080d5d6  DAT  shift_flag_main_d       b  ; main-D switch flag
 0x0080d5e0  DAT  shift_flag_sub_d        b  ; sub-D switch flag
+0x0080d5e3  DAT  vp_main_relay_coil_low  b  ; debounced P12.0 == 0: the main relay's coil pulled low. C200E if set while the relay is commanded off [conf: high]
 
 # --- ADC / pedal / torque ----------------------------------------------------
 0x0080b418  DAT  adc_ready_flag          b  ; bit6(0x40) = conversion done
@@ -519,7 +520,7 @@
 0x0000ed38  FUN  gpio_p12_bit1_sense  ; latch P12DATA bit1 into 0x80ae1a status [conf: med]
 0x0000f2f8  FUN  gpio_p1_init_ae1d  ; set P1DATA bit + init 0x80AE1D block [conf: med]
 0x0000f368  FUN  gpio_port_mode_enforce  ; enforce P0..P8 MOD/DIR register config [conf: high]
-0x0000f948  FUN  gpio_telltale_out  ; drive lamp/telltale bits to P1/P8/P10/P11 [conf: high]
+0x0000f948  FUN  relay_outputs_out  ; copies the relay/lamp output image (0x80ae1d..) to P1/P8/P10/P11; ae1d bit1 -> P1.5 precharge relay, bit2 -> P1.6 CNT-, bit3 -> P1.7 CNT+. Was gpio_telltale_out [conf: high]
 0x0000fbdc  FUN  timer_tin3033_init  ; configure TIN2023/TML1/TIN3033 timers [conf: high]
 0x0000fc84  FUN  gpio_port_p3_init  ; configure P3/PG67/P0 port dir/mode [conf: high]
 0x0000fd10  FUN  wheel_speed_period_calc  ; TML1 capture period -> speed a01c/ae24 [conf: med]
@@ -1583,7 +1584,7 @@
 0x0008b6a4  FUN  motor_stall_speed_eval  ; motor_speed_index vs thresh -> two_stage_latch [conf: med]
 0x0008b6ec  FUN  dtc_monitor_reset_single_c  ; reset single latch 0x80efec [conf: med]
 0x0008b6fc  FUN  fault_aggregate_d435  ; motor_speed/condenser_voltage fault -> two_stage_latch, d435 [conf: med]
-0x0008b824  FUN  precharge_relay_sequencer  ; precharge/HV-relay sequencer: drives precharge_relay1/2/3 + precharge_dd68_mode (states 0x14/0x15/0x1c/0x1e/0x28) from precharge_cmd_code (set by drive_inhibit_scan_out_a/b + precharge_done_flag). Runs in DRIVE (HV bring-up), not charge-only — the "charge" naming is a misnomer (ex charge_timer_state_machine) [conf: high]
+0x0008b824  FUN  vacuum_pump_sequencer  ; brake electric vacuum pump: switches vp_main_relay / vp_control_relay1/2 (P10.7/P10.6/P10.5) from the vacuum reading. Was precharge_relay_sequencer; the relays are the vacuum pump's (C200A/C200E/C2016 are VP codes) [conf: high]
 0x0008bbb4  FUN  mode_init_flags_e62f  ; init mode/state flag block (0x80e62f) [conf: med]
 0x0008bbf0  FUN  precharge_condenser_seq  ; condenser precharge substate machine (dd68 mode) [conf: med]
 0x0008bf3c  FUN  precharge_substate_clear  ; zero precharge substate vars 0x80e62e-0x80e638 [conf: med]
@@ -1603,13 +1604,13 @@
 0x0008d24c  FUN  dtc_monitor_0xC5  ; two-stage-latch fault index 0xC5 [conf: high]
 0x0008d2a0  FUN  copy_df60_to_e907  ; DAT_0080e907 = DAT_0080df60 [conf: med]
 0x0008d2cc  FUN  dtc_monitor_c6  ; condenser_voltage window check + dtc_set_by_index(0xc6) [conf: med]
-0x0008d3f8  FUN  dtc_monitor_c7_simple  ; OR two flags -> DTC 199 (0xc7) [conf: high]
+0x0008d3f8  FUN  dtc_monitor_C200A  ; C200A (fail-safe relay coil, VP) = cond_a || cond_b [conf: high]
 0x0008d430  FUN  latch_array_reset_ef50  ; resets 2 latch/debounce blocks [conf: high]
 0x0008d450  FUN  dtc_monitor_ee50  ; charging fault two_stage_latch (d6f4/contactor_fb) [conf: med]
 0x0008d534  FUN  dtc_monitor_reset_ef38  ; reset debounce latch e905 [conf: med]
-0x0008d554  FUN  dtc_monitor_temp_range  ; temp-range derate latch (df54/d6f2) [conf: med]
+0x0008d554  FUN  dtc_monitor_C200A_contact  ; C200A cond: vp_main_relay commanded on (df54) while HV live and vp_main_relay_contact (P22.3) low. Was dtc_monitor_temp_range [conf: high]
 0x0008d604  FUN  reset_dtc_debounce_ef20  ; reset debounce block 0x80ef20 [conf: med]
-0x0008d624  FUN  dtc_monitor_C200E  ; charge fault -> two_stage_latch + dtc_set_by_index(0xc8) [conf: high]
+0x0008d624  FUN  dtc_monitor_C200E  ; C200E (fail-safe relay stuck on, VP): vp_main_relay commanded off while its coil monitor (P12.0) reads low [conf: high]
 0x0008d6f0  FUN  reset_latch_e903  ; resets latch/debounce state e903 [conf: med]
 0x0008d710  FUN  dtc_monitor_C200F  ; charging_contactor_fb latch, dtc_set_by_index(0xc9) [conf: high]
 0x0008d7cc  FUN  dtc_monitor_reset_grp17  ; reset latch object 0x80eefc [conf: med]
@@ -2031,7 +2032,7 @@
 0x0080ae19  DAT  gpio_input_latch_19  b  ; raw discrete-input latch byte [conf: high]
 0x0080ae1a  DAT  gpio_input_latch_1a  b  ; raw discrete-input latch byte [conf: high]
 0x0080ae1b  DAT  gpio_input_latch_1b  b  ; raw discrete-input latch byte [conf: high]
-0x0080ae1d  DAT  telltale_pack_ae1d  b  ; packed telltale/status nibble ae1d [conf: med]
+0x0080ae1d  DAT  relay_out_image  b  ; relay output image: bit1 P1.5 precharge relay (on at the EV-ECU's HV stage 4, off once CNT+ closes), bit2 P1.6 CNT-, bit3 P1.7 CNT+. Was telltale_pack_ae1d [conf: high]
 0x0080ae1e  DAT  telltale_pack_ae1e  b  ; packed telltale/status byte ae1e [conf: med]
 0x0080ae1f  DAT  ae1f_mode_bits  b  ; mode bit flags [conf: med]
 0x0080ae24  DAT  wheel_speed_out  f  ; wheel speed output copy [conf: high]
@@ -2764,9 +2765,10 @@
 0x0080d687  DAT  drive_ready_input  b  ; drive-ready condition input [conf: med]
 0x0080d68b  DAT  drive_mode_valid  b  ; drive-mode valid flag (DTC 0x2c) [conf: med]
 0x0080d6e4  DAT  gpio_bit_shift_input  b  ; extracted shift-input pin bit [conf: med]
-0x0080d6f2  DAT  charge_relay_flag  b  ; charge-relay feedback flag [conf: med]
+0x0080d6f2  DAT  vp_main_relay_contact  b  ; vacuum pump main relay's switched side, P22.3 (gpio_input_latch_1b bit1). Was charge_relay_flag [conf: high]
 0x0080d6f3  DAT  gpio_bit_d6f3  b  ; extracted discrete input pin bit [conf: med]
 0x0080d6f4  DAT  hv_charge_precond_p91  b  ; P9.1 discrete INPUT; HV-active/charge-engaged precondition. Copied verbatim to charge_precond_flag (0x80b506) and consumed by ~20 HV/condenser DTC monitors as their monitoring-enable. NOT a discharge contactor (ex discharge_contactor_fb) [conf: high]
+0x0080d706  DAT  p12_0_low  b  ; gpio_input_latch_1a bit0 = (P12.0 == 0), vacuum pump main relay coil monitor [conf: high]
 0x0080d707  DAT  condenser_dtc_cond_b  b  ; condenser DTC input B [conf: med]
 0x0080d717  DAT  dtc_U1804_stage_a  b  ; DTC 0x32 intermediate latch input [conf: med]
 0x0080d718  DAT  charge_gate_d718  b  ; charge/inhibit gate byte [conf: med]
@@ -3267,7 +3269,7 @@
 0x0080dfb9  DAT  dtc_C200E_debounced  b  ; DTC 0xc8 debounced flag [conf: high]
 0x0080dfbb  DAT  dtc_temp_range_condition  b  ; temp range derate condition [conf: high]
 0x0080dfbc  DAT  dtc_temp_range_debounce  b  ; temp range derate debounce [conf: high]
-0x0080dfbe  DAT  dtc_C200A_cond_b  b  ; DTC 0xc7 input flag B [conf: med]
+0x0080dfbe  DAT  dtc_C200A_cond_b  b  ; C200A: main relay on but its contact (P22.3) low [conf: high]
 0x0080dfbf  DAT  dtc_ee50_cond  b  ; ee50 charge-fault condition [conf: med]
 0x0080dfc0  DAT  dtc_ee50_debounced  b  ; ee50 debounced output [conf: med]
 0x0080dfc2  DAT  dtc_C200A_cond_a  b  ; DTC 0xc7 input flag A [conf: med]
@@ -3277,9 +3279,9 @@
 0x0080dfd2  DAT  dtc_condenser_cond  b  ; condenser DTC range condition [conf: high]
 0x0080dfd3  DAT  dtc_condenser_debounced  b  ; condenser DTC debounced [conf: high]
 0x0080dfd8  DAT  precharge_bypass  b  ; precharge dwell-bypass flag [conf: med]
-0x0080dfd9  DAT  precharge_relay1  b  ; precharge relay output 1 [conf: med]
-0x0080dfda  DAT  precharge_relay2  b  ; precharge relay output 2 [conf: med]
-0x0080dfdb  DAT  precharge_relay3  b  ; precharge relay output 3 [conf: med]
+0x0080dfd9  DAT  vp_main_relay  b  ; vacuum pump main (fail-safe) relay command -> P10.7. Was precharge_relay1 [conf: high]
+0x0080dfda  DAT  vp_control_relay1  b  ; vacuum pump control relay 1 -> P10.6. Was precharge_relay2 [conf: med]
+0x0080dfdb  DAT  vp_control_relay2  b  ; vacuum pump control relay 2 -> P10.5. Was precharge_relay3 [conf: med]
 0x0080dfdc  DAT  precharge_fault_cond  b  ; precharge fault assert cond [conf: med]
 0x0080dfdd  DAT  precharge_fault_clear  b  ; precharge fault clear cond [conf: med]
 0x0080dfde  DAT  precharge_stage_ok  b  ; precharge stage-complete flag [conf: med]

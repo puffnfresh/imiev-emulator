@@ -10423,7 +10423,7 @@ void gpio_p1_init_ae1d(void)
 {
   P1DATA = P1DATA & 0xfd | 2;
   gpio_port_mode_enforce();
-  telltale_pack_ae1d = telltale_pack_ae1d & 0xf0;
+  relay_out_image = relay_out_image & 0xf0;
   telltale_pack_ae1e = 0x20;
   ae1f_mode_bits = 0;
   return;
@@ -10505,17 +10505,18 @@ void FUN_0000f944(void)
 }
 
 
-//=== 0x0000f948 gpio_telltale_out [NAMED] (calls=2)
+//=== 0x0000f948 relay_outputs_out [NAMED] (calls=2)
 
-/* drive lamp/telltale bits to P1/P8/P10/P11 [conf: high] */
+/* copies the relay/lamp output image (0x80ae1d..) to P1/P8/P10/P11; ae1d bit1 -> P1.5 precharge relay, bit2 -> P1.6
+   CNT-, bit3 -> P1.7 CNT+. Was gpio_telltale_out [conf: high] */
 
-void gpio_telltale_out(void)
+void relay_outputs_out(void)
 
 {
   irq_disable_push_psw();
-  P1DATA = P1DATA & 1 | (byte)(((telltale_pack_ae1e & 0x3f) >> 5) << 1) | (byte)(((telltale_pack_ae1d & 3) >> 1) << 5) |
-           (byte)(((telltale_pack_ae1d & 0xf) >> 3) << 7) | (byte)(((telltale_pack_ae1d & 7) >> 2) << 6) |
-           ((telltale_pack_ae1e & 0x40) == 0) << 2 | (telltale_pack_ae1e >> 7) << 3 | (telltale_pack_ae1d & 1) << 4;
+  P1DATA = P1DATA & 1 | (byte)(((telltale_pack_ae1e & 0x3f) >> 5) << 1) | (byte)(((relay_out_image & 3) >> 1) << 5) |
+           (byte)(((relay_out_image & 0xf) >> 3) << 7) | (byte)(((relay_out_image & 7) >> 2) << 6) |
+           ((telltale_pack_ae1e & 0x40) == 0) << 2 | (telltale_pack_ae1e >> 7) << 3 | (relay_out_image & 1) << 4;
   P8DATA = P8DATA & 0xf9 | (byte)(((telltale_pack_ae1e & 0xf) >> 3) << 1) |
            (byte)(((telltale_pack_ae1e & 0x1f) >> 4) << 2);
   P10DATA = P10DATA & 0x1f | (byte)(((telltale_pack_ae1e & 7) >> 2) << 7) | (byte)(((telltale_pack_ae1e & 3) >> 1) << 6)
@@ -34853,19 +34854,19 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   build_battery_status_frame_08cd10();
   DAT_0080df59 = bVar10;
   if ((uVar3 & 0xff) == 0) {
-    DAT_0080df59 = precharge_relay1;
+    DAT_0080df59 = vp_main_relay;
   }
   if ((int)((uint)DAT_0080b655 << 0x1a) < 0) {
     DAT_0080df5a = (byte)(((uint)uds_routine_result_flags._1_1_ << 0x1a) >> 0x1f);
   }
   else {
-    DAT_0080df5a = precharge_relay2;
+    DAT_0080df5a = vp_control_relay1;
   }
   if ((int)((uint)DAT_0080b655 << 0x1a) < 0) {
     DAT_0080df5b = (byte)(((uint)uds_routine_result_flags._1_1_ << 0x1a) >> 0x1f);
   }
   else {
-    DAT_0080df5b = precharge_relay3;
+    DAT_0080df5b = vp_control_relay2;
   }
   monitor_condenser_low_dfe1();
   uVar3 = (DAT_0080b655 & 0x1f) >> 4;
@@ -57362,7 +57363,7 @@ void gpio_bit_extract(void)
   DAT_0080d6ef = (byte)(((uint)gpio_input_latch_18 << 0x1f) >> 0x1f);
   DAT_0080d6f0 = (byte)(((uint)gpio_input_latch_18 << 0x1b) >> 0x1f);
   DAT_0080d6f1 = (byte)(((uint)gpio_input_latch_18 << 0x1a) >> 0x1f);
-  charge_relay_flag = (byte)(((uint)gpio_input_latch_1b << 0x1e) >> 0x1f);
+  vp_main_relay_contact = (byte)(((uint)gpio_input_latch_1b << 0x1e) >> 0x1f);
   _DAT_0080d242 =
        ((short)((int)((uint)gpio_input_latch_18 << 0x1c) >> 0x1f) * -2 -
        (short)((int)((uint)gpio_input_latch_18 << 0x1e) >> 0x1f)) +
@@ -57429,8 +57430,8 @@ void gpio_bit_extract(void)
        (short)((int)((uint)gpio_input_latch_17 << 0x1d) >> 0x1f) * -0x800 +
        (short)((int)((uint)gpio_input_latch_17 << 0x1e) >> 0x1f) * -0x1000 +
        (short)((int)((uint)gpio_input_latch_17 << 0x1f) >> 0x1f) * -0x2000 + DAT_0080a944 + DAT_0080a946;
-  DAT_0080d706 = (byte)(((uint)gpio_input_latch_1a << 0x1f) >> 0x1f);
-  DAT_0080b4f2 = DAT_0080d706;
+  p12_0_low = (byte)(((uint)gpio_input_latch_1a << 0x1f) >> 0x1f);
+  DAT_0080b4f2 = p12_0_low;
   condenser_dtc_cond_b = (byte)(((uint)gpio_input_latch_17 << 0x19) >> 0x1f);
   DAT_0080b4ff = condenser_dtc_cond_b;
   DAT_0080d708 = (byte)(((uint)gpio_input_latch_19 << 0x1e) >> 0x1f);
@@ -63291,8 +63292,8 @@ void dtc_pack_status_bits_d1c8(void)
   DAT_0080b49e = telltale_d85e;
   DAT_0080b4a1 = telltale_d859;
   DAT_0080b49b = telltale_d85b;
-  telltale_pack_ae1d =
-       telltale_pack_ae1d & 0xf0 | (byte)(((uint)telltale_d852 << 0x1f) >> 0x1f) |
+  relay_out_image =
+       relay_out_image & 0xf0 | (byte)(((uint)telltale_d852 << 0x1f) >> 0x1f) |
        (byte)(((uint)telltale_d85b << 0x1f) >> 0x1e) | (telltale_d85c & 1) << 3 |
        (byte)(((uint)telltale_d85d << 0x1f) >> 0x1d);
   DAT_0080b4a9 = telltale_d854;
@@ -64262,14 +64263,13 @@ void fault_aggregate_d435(void)
 }
 
 
-//=== 0x0008b824 precharge_relay_sequencer [NAMED] (calls=4)
+//=== 0x0008b824 vacuum_pump_sequencer [NAMED] (calls=4)
 
 /* WARNING: Type propagation algorithm not settling */
-/* precharge/HV-relay sequencer: drives precharge_relay1/2/3 + precharge_dd68_mode (states 0x14/0x15/0x1c/0x1e/0x28)
-   from precharge_cmd_code (set by drive_inhibit_scan_out_a/b + precharge_done_flag). Runs in DRIVE (HV bring-up), not
-   charge-only — the "charge" naming is a misnomer (ex charge_timer_state_machine) [conf: high] */
+/* brake electric vacuum pump: switches vp_main_relay / vp_control_relay1/2 (P10.7/P10.6/P10.5) from the vacuum reading.
+   Was precharge_relay_sequencer; the relays are the vacuum pump's (C200A/C200E/C2016 are VP codes) [conf: high] */
 
-float precharge_relay_sequencer(void)
+float vacuum_pump_sequencer(void)
 
 {
   float fVar1;
@@ -64332,9 +64332,9 @@ LAB_0008b914:
       }
       if (precharge_cmd_code == 0x28) {
         precharge_dd68_mode = 0x28;
-        precharge_relay1 = 0;
-        precharge_relay2 = 0;
-        precharge_relay3 = 0;
+        vp_main_relay = 0;
+        vp_control_relay1 = 0;
+        vp_control_relay2 = 0;
         charge_sub_a = 0;
         charge_sub_b = 0;
         charge_sub_c = 0;
@@ -64346,9 +64346,9 @@ LAB_0008b914:
       if (charge_sub_b == 1) {
         if (precharge_abort != 0) {
           precharge_dd68_mode = 0x1c;
-          precharge_relay1 = 0;
-          precharge_relay2 = 1;
-          precharge_relay3 = 1;
+          vp_main_relay = 0;
+          vp_control_relay1 = 1;
+          vp_control_relay2 = 1;
           charge_sub_a = 0;
           charge_sub_b = 2;
           charge_sub_c = 1;
@@ -64360,9 +64360,9 @@ LAB_0008b914:
             return charge_voltage_cf64 - battery_sig_d9a8;
           }
           precharge_dd68_mode = 0x15;
-          precharge_relay1 = 1;
-          precharge_relay2 = 1;
-          precharge_relay3 = 1;
+          vp_main_relay = 1;
+          vp_control_relay1 = 1;
+          vp_control_relay2 = 1;
           charge_hold_flag = 1;
           charge_sub_a = 2;
           charge_step_a = 1;
@@ -64370,17 +64370,17 @@ LAB_0008b914:
         }
         if (charge_sub_a != 2) {
           precharge_dd68_mode = 0x14;
-          precharge_relay1 = 1;
-          precharge_relay2 = 0;
-          precharge_relay3 = 0;
+          vp_main_relay = 1;
+          vp_control_relay1 = 0;
+          vp_control_relay2 = 0;
           charge_sub_a = 1;
           return 1.4013e-45;
         }
         if (charge_hold_flag == 0) {
           precharge_dd68_mode = 0x14;
-          precharge_relay1 = 1;
-          precharge_relay2 = 0;
-          precharge_relay3 = 0;
+          vp_main_relay = 1;
+          vp_control_relay1 = 0;
+          vp_control_relay2 = 0;
           charge_sub_a = 1;
           charge_step_a = 0;
           return 1.4013e-45;
@@ -64412,9 +64412,9 @@ LAB_0008bb30:
       }
       if (charge_sub_b != 2) {
         precharge_dd68_mode = 0x14;
-        precharge_relay1 = 1;
-        precharge_relay2 = 0;
-        precharge_relay3 = 0;
+        vp_main_relay = 1;
+        vp_control_relay1 = 0;
+        vp_control_relay2 = 0;
         charge_sub_a = 1;
         charge_sub_b = 1;
         return 1.4013e-45;
@@ -64425,9 +64425,9 @@ LAB_0008bb30:
             return charge_voltage_cf64 - battery_sig_d9a8;
           }
           precharge_dd68_mode = 0x1d;
-          precharge_relay1 = 1;
-          precharge_relay2 = 1;
-          precharge_relay3 = 1;
+          vp_main_relay = 1;
+          vp_control_relay1 = 1;
+          vp_control_relay2 = 1;
           charge_hold_flag = 1;
           charge_sub_c = 2;
           charge_step_b = 1;
@@ -64461,9 +64461,9 @@ LAB_0008bb30:
           charge_step_b = 0;
         }
         precharge_dd68_mode = 0x1c;
-        precharge_relay1 = 0;
-        precharge_relay2 = 1;
-        precharge_relay3 = 1;
+        vp_main_relay = 0;
+        vp_control_relay1 = 1;
+        vp_control_relay2 = 1;
         charge_sub_c = 1;
         return 1.4013e-45;
       }
@@ -64483,9 +64483,9 @@ LAB_0008bb80:
   *(undefined1 *)((int)&monitor_state_base2 + iVar3) = uVar2;
   charge_sub_b = 1;
   charge_sub_a = 1;
-  precharge_relay3 = 0;
-  precharge_relay2 = 0;
-  precharge_relay1 = 1;
+  vp_control_relay2 = 0;
+  vp_control_relay1 = 0;
+  vp_main_relay = 1;
   precharge_dd68_mode = 0x14;
   return 1.4013e-45;
 }
@@ -64501,9 +64501,9 @@ void mode_init_flags_e62f(void)
 {
   precharge_sub_main = 1;
   precharge_sub_a = 2;
-  precharge_relay1 = 1;
-  precharge_relay2 = 1;
-  precharge_relay3 = 1;
+  vp_main_relay = 1;
+  vp_control_relay1 = 1;
+  vp_control_relay2 = 1;
   precharge_dd68_mode = 0x1e;
   precharge_step_a3 = 1;
   precharge_step_a4 = 2;
@@ -64540,9 +64540,9 @@ void precharge_condenser_seq(void)
           if (precharge_sub_a == 1) {
             if (precharge_active_b == 0) {
               precharge_dd68_mode = 0x1e;
-              precharge_relay1 = 1;
-              precharge_relay2 = 1;
-              precharge_relay3 = 1;
+              vp_main_relay = 1;
+              vp_control_relay1 = 1;
+              vp_control_relay2 = 1;
               _precharge_timer_a_80e610 = 0;
               precharge_active_a = 1;
               precharge_sub_a = 2;
@@ -64572,9 +64572,9 @@ void precharge_condenser_seq(void)
           }
           if (precharge_sub_a != 2) {
             precharge_dd68_mode = 0x1e;
-            precharge_relay1 = 1;
-            precharge_relay2 = 1;
-            precharge_relay3 = 1;
+            vp_main_relay = 1;
+            vp_control_relay1 = 1;
+            vp_control_relay2 = 1;
             _precharge_timer_a_80e610 = 0;
             precharge_active_a = 1;
             precharge_sub_a = 2;
@@ -64584,9 +64584,9 @@ void precharge_condenser_seq(void)
           }
           if (precharge_active_a == 0) {
             precharge_dd68_mode = 0x1f;
-            precharge_relay1 = 1;
-            precharge_relay2 = 0;
-            precharge_relay3 = 0;
+            vp_main_relay = 1;
+            vp_control_relay1 = 0;
+            vp_control_relay2 = 0;
             _precharge_timer_a_80e610 = 0;
             _precharge_timer_b_80e614 = 0;
             precharge_active_b = 1;
@@ -64629,9 +64629,9 @@ LAB_0008bedc:
         }
         if (precharge_abort == 0) {
           precharge_dd68_mode = 0x1e;
-          precharge_relay1 = 1;
-          precharge_relay2 = 1;
-          precharge_relay3 = 1;
+          vp_main_relay = 1;
+          vp_control_relay1 = 1;
+          vp_control_relay2 = 1;
           _precharge_timer_a_80e610 = 0;
           precharge_active_a = 1;
           precharge_sub_a = 2;
@@ -64674,9 +64674,9 @@ LAB_0008be3c:
         else if (precharge_sub_b == 2) {
           if (precharge_active_a == 0) {
             precharge_dd68_mode = 0x27;
-            precharge_relay1 = 0;
-            precharge_relay2 = 1;
-            precharge_relay3 = 1;
+            vp_main_relay = 0;
+            vp_control_relay1 = 1;
+            vp_control_relay2 = 1;
             _precharge_timer_a_80e610 = 0;
             _precharge_timer_b_80e614 = 0;
             precharge_active_b = 1;
@@ -64705,9 +64705,9 @@ LAB_0008be3c:
         }
       }
       precharge_dd68_mode = 0x26;
-      precharge_relay1 = 1;
-      precharge_relay2 = 1;
-      precharge_relay3 = 1;
+      vp_main_relay = 1;
+      vp_control_relay1 = 1;
+      vp_control_relay2 = 1;
       _precharge_timer_a_80e610 = 0;
       precharge_active_a = 1;
       precharge_sub_b = 2;
@@ -64772,15 +64772,15 @@ void precharge_phase_select(void)
     precharge_phase_b = 3;
     precharge_cmd_code = 1;
     precharge_dd68_mode = 1;
-    precharge_relay1 = 0;
+    vp_main_relay = 0;
     DAT_0080e648 = 1;
     DAT_0080e63e = 2;
     charge_dwell_counter = (float)(uint)(ushort)can_tx_batt_status;
     DAT_0080e620 = 1;
     DAT_0080e651 = 1;
   }
-  precharge_relay3 = 0;
-  precharge_relay2 = 0;
+  vp_control_relay2 = 0;
+  vp_control_relay1 = 0;
   return;
 }
 
@@ -64947,9 +64947,9 @@ void precharge_seq_state_clear(void)
   _precharge_timer_b_80e614 = 0;
   precharge_cmd_code = 0;
   DAT_0080e628 = 0;
-  precharge_relay1 = 0;
-  precharge_relay2 = 0;
-  precharge_relay3 = 0;
+  vp_main_relay = 0;
+  vp_control_relay1 = 0;
+  vp_control_relay2 = 0;
   precharge_dd68_mode = 0;
   return;
 }
@@ -64971,7 +64971,7 @@ void battery_model_dispatch(void)
       return;
     }
     if (battmodel_substate == 2) {
-      precharge_relay_sequencer();
+      vacuum_pump_sequencer();
       return;
     }
   }
@@ -65319,11 +65319,11 @@ void dtc_monitor_c6(void)
 }
 
 
-//=== 0x0008d3f8 dtc_monitor_c7_simple [NAMED] (calls=1)
+//=== 0x0008d3f8 dtc_monitor_C200A [NAMED] (calls=1)
 
-/* OR two flags -> DTC 199 (0xc7) [conf: high] */
+/* C200A (fail-safe relay coil, VP) = cond_a || cond_b [conf: high] */
 
-void dtc_monitor_c7_simple(void)
+void dtc_monitor_C200A(void)
 
 {
   if ((dtc_C200A_cond_a == 0) && (dtc_C200A_cond_b == 0)) {
@@ -65364,7 +65364,7 @@ void dtc_monitor_ee50(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((DAT_0080df54 == '\0') && (charge_relay_flag != 0)) && (DAT_0080df67 != '\0')) &&
+  if ((((DAT_0080df54 == '\0') && (vp_main_relay_contact != 0)) && (DAT_0080df67 != '\0')) &&
      (((precharge_mode_snapshot < 3 || (precharge_mode_snapshot == 6)) ||
       ((precharge_mode_snapshot == 7 || (precharge_mode_snapshot == 8)))))) {
     dtc_ee50_cond = 1;
@@ -65403,11 +65403,12 @@ void dtc_monitor_reset_ef38(void)
 }
 
 
-//=== 0x0008d554 dtc_monitor_temp_range [NAMED] (calls=2)
+//=== 0x0008d554 dtc_monitor_C200A_contact [NAMED] (calls=2)
 
-/* temp-range derate latch (df54/d6f2) [conf: med] */
+/* C200A cond: vp_main_relay commanded on (df54) while HV live and vp_main_relay_contact (P22.3) low. Was
+   dtc_monitor_temp_range [conf: high] */
 
-void dtc_monitor_temp_range(void)
+void dtc_monitor_C200A_contact(void)
 
 {
   undefined1 uVar1;
@@ -65416,7 +65417,7 @@ void dtc_monitor_temp_range(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((DAT_0080df54 == '\0') || (charge_relay_flag != 0)) || (DAT_0080df67 == '\0')) {
+  if (((DAT_0080df54 == '\0') || (vp_main_relay_contact != 0)) || (DAT_0080df67 == '\0')) {
     dtc_temp_range_condition = 0;
   }
   else {
@@ -65454,7 +65455,8 @@ void reset_dtc_debounce_ef20(void)
 
 //=== 0x0008d624 dtc_monitor_C200E [NAMED] (calls=3)
 
-/* charge fault -> two_stage_latch + dtc_set_by_index(0xc8) [conf: high] */
+/* C200E (fail-safe relay stuck on, VP): vp_main_relay commanded off while its coil monitor (P12.0) reads low [conf:
+   high] */
 
 void dtc_monitor_C200E(void)
 
@@ -65465,7 +65467,7 @@ void dtc_monitor_C200E(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((DAT_0080df54 == '\0') && (DAT_0080d5e3 != '\0')) && (hv_transfer_permit != 0)) &&
+  if ((((DAT_0080df54 == '\0') && (vp_main_relay_coil_low != 0)) && (hv_transfer_permit != 0)) &&
      (precharge_mode_snapshot == 8)) {
     dtc_C200E_raw = 1;
   }
@@ -65516,7 +65518,7 @@ void dtc_monitor_C200F(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((DAT_0080df54 == '\0') || (DAT_0080d5e3 != '\0')) || (DAT_0080df67 == '\0')) {
+  if (((DAT_0080df54 == '\0') || (vp_main_relay_coil_low != 0)) || (DAT_0080df67 == '\0')) {
     dtcc9_dbnc_in = 0;
   }
   else {
@@ -67314,8 +67316,8 @@ void diag_status_aggregate_b(void)
   dtc_monitor_0xC5();
   dtc_monitor_c6();
   dtc_monitor_ee50();
-  dtc_monitor_temp_range();
-  dtc_monitor_c7_simple();
+  dtc_monitor_C200A_contact();
+  dtc_monitor_C200A();
   dtc_monitor_C200E();
   dtc_monitor_C200F();
   dtc_monitor_C2010();
