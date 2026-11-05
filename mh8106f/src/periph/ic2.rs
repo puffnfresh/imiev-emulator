@@ -11,6 +11,8 @@ pub const S2TXB_LO: u32 = 0x0080_0133;
 pub const S2RCNT: u32 = 0x0080_0136;
 pub const DM59ITST: u32 = 0x0080_0408;
 pub const DM5CNT0: u32 = 0x0080_0418;
+pub const DM5DA: u32 = 0x0080_041c;
+const DM5DA_LO: u32 = 0x0080_041d;
 
 pub const TX_COMPLETE: u8 = 0x08; // SI23ST bit3
 pub const DMA5_COMPLETE: u8 = 0x01; // DM59ITST bit0
@@ -28,6 +30,7 @@ pub struct Ic2 {
     tx_event: bool, // a byte has finished clocking out of S2TXB (TX-complete)
     tx_latency: u32, // cycles remaining before the in-flight TX byte completes
     rx_armed: bool, // firmware armed DMA5 to receive the next answer
+    dm5da: u16,     // where DMA5 writes the answer
     rx_buf: [u8; 8],
     rx_len: usize,
     rx_latency: u32,
@@ -90,6 +93,10 @@ impl Ic2 {
         self.dm59itst |= DMA5_COMPLETE;
     }
 
+    pub fn rx_destination(&self) -> u32 {
+        0x0080_0000 | self.dm5da as u32
+    }
+
     pub fn rx_pending(&self) -> bool {
         self.dm59itst & DMA5_COMPLETE != 0 || self.rx_latency > 0 || self.rx_ready
     }
@@ -97,19 +104,22 @@ impl Ic2 {
 
 impl Peripheral for Ic2 {
     fn handles(&self, a: u32) -> bool {
-        matches!(a, SI23ST | S2TXB | S2TXB_LO | S2RCNT | DM59ITST | DM5CNT0)
+        matches!(a, SI23ST | S2TXB | S2TXB_LO | S2RCNT | DM59ITST | DM5CNT0 | DM5DA | DM5DA_LO)
     }
 
-    fn read(&mut self, a: u32, _size: u32) -> u32 {
+    fn read(&mut self, a: u32, size: u32) -> u32 {
         match a {
             SI23ST => self.si23st as u32,
             DM59ITST => self.dm59itst as u32,
             S2RCNT => self.s2rcnt as u32,
+            DM5DA if size == 2 => self.dm5da as u32,
+            DM5DA => (self.dm5da >> 8) as u32,
+            DM5DA_LO => (self.dm5da & 0xff) as u32,
             _ => 0,
         }
     }
 
-    fn write(&mut self, a: u32, _size: u32, v: u32) {
+    fn write(&mut self, a: u32, size: u32, v: u32) {
         match a {
             // Status registers: write-0-to-clear (a 0 bit clears, a 1 bit is unchanged).
             SI23ST => self.si23st &= v as u8,
@@ -117,6 +127,9 @@ impl Peripheral for Ic2 {
             S2RCNT => self.s2rcnt = (v as u8) & !RX_ERROR, // never leave RX-error latched
             S2TXB | S2TXB_LO => self.tx_latency = TX_LATENCY, // begin clocking a byte out
             DM5CNT0 if v == DMA_ARM_CMD => self.rx_armed = true,
+            DM5DA if size == 2 => self.dm5da = v as u16,
+            DM5DA => self.dm5da = (self.dm5da & 0x00ff) | ((v as u16 & 0xff) << 8),
+            DM5DA_LO => self.dm5da = (self.dm5da & 0xff00) | (v as u16 & 0xff),
             _ => {}
         }
     }
@@ -172,5 +185,16 @@ mod tests {
         assert_eq!(len, 5);
         assert_eq!(&buf[..len], &[0x35, 0x01, 0x00, 0x00, 0xc9]);
         assert!(ic2.take_ready_rx().is_none(), "delivery is one-shot");
+    }
+
+    #[test]
+    fn dm5da_sets_where_answers_land() {
+        let mut ic2 = Ic2::new();
+        ic2.write(DM5DA, 2, 0x824e);
+        assert_eq!(ic2.rx_destination(), 0x0080_824e);
+        ic2.write(DM5DA_LO, 1, 0xc6);
+        ic2.write(DM5DA, 1, 0x82);
+        assert_eq!(ic2.rx_destination(), 0x0080_82c6);
+        assert_eq!(ic2.read(DM5DA, 2), 0x82c6);
     }
 }

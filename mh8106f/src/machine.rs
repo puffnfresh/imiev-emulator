@@ -13,7 +13,6 @@ use crate::{FLASH_SIZE, RAM_BASE, RAM_END, RAM_LEN, SFR_END};
 
 const SIO23_IVECT: u16 = 0x00ec;
 const DMA59_IVECT: u16 = 0x00e8;
-const IC2_RX_BUFFER: u32 = 0x0080_824e;
 
 const CAN0_BASE: u32 = 0x0080_1000;
 const CAN1_BASE: u32 = 0x0080_1400;
@@ -110,8 +109,9 @@ impl Machine {
 
     fn ic2_service_rx(&mut self) {
         if let Some((buf, len)) = self.ic2.take_ready_rx() {
+            let dest = self.ic2.rx_destination();
             for (i, &b) in buf.iter().take(len).enumerate() {
-                if let Some(off) = self.ram_off(IC2_RX_BUFFER + i as u32) {
+                if let Some(off) = self.ram_off(dest + i as u32) {
                     self.ram[off] = b;
                 }
             }
