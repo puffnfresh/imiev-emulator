@@ -32,7 +32,9 @@ const CDA: f32 = 0.62; // Cd*A
 const RHO: f32 = 1.2; // air density
 const CRR: f32 = 0.012; // rolling-resistance coefficient
 const G: f32 = 9.81;
-const TORQUE_SCALE: f32 = 180.0 / 3650.0; // d384 torque request (0..3650) -> Nm (~180 Nm peak)
+const ECU_TORQUE_ID: u16 = 0x285; // b0:b1 = commanded motor torque * 10 + 2000 (Nm)
+const TORQUE_OFFSET: f32 = 2000.0;
+const TORQUE_PER_BIT: f32 = 0.1; // Nm
 const BRAKE_FORCE: f32 = 3500.0; // N at full brake
 pub const VEHICLE_DT: f32 = 0.01;
 
@@ -60,12 +62,18 @@ pub struct Inverter {
 }
 
 impl Inverter {
-    pub(crate) fn integrate(&mut self, torque_req: f32, brake: f32, coupled: bool, dt: f32) {
-        let f_trac = if coupled {
-            (torque_req.max(0.0) * TORQUE_SCALE) * GEAR / WHEEL_R // N at the wheels
-        } else {
-            0.0
-        };
+    fn commanded_torque(bus: &CanBus) -> f32 {
+        bus.last(ECU_TORQUE_ID).map_or(0.0, |f| {
+            (u16::from_be_bytes([f.data[0], f.data[1]]) as f32 - TORQUE_OFFSET) * TORQUE_PER_BIT
+        })
+    }
+
+    pub(crate) fn integrate(&mut self, bus: &CanBus, brake: f32, dt: f32) {
+        self.drive(Self::commanded_torque(bus), brake, dt);
+    }
+
+    fn drive(&mut self, torque_nm: f32, brake: f32, dt: f32) {
+        let f_trac = torque_nm * GEAR / WHEEL_R;
         let f_drag = 0.5 * RHO * CDA * self.speed * self.speed;
         let f_roll = if self.speed > 0.01 { CRR * MASS * G } else { 0.0 };
         let f_brake = brake.clamp(0.0, 1.0) * BRAKE_FORCE;
@@ -110,21 +118,33 @@ impl Inverter {
 mod tests {
     use super::*;
 
+    fn commanding(nm: f32) -> CanBus {
+        let mut bus = CanBus::default();
+        let word = (nm / TORQUE_PER_BIT + TORQUE_OFFSET) as u16;
+        let [hi, lo] = word.to_be_bytes();
+        bus.record(frame(ECU_TORQUE_ID, &[hi, lo, 0x14, 0, 0, 0, 0, 0]));
+        bus
+    }
+
     #[test]
-    fn coupled_drive_torque_accelerates_the_car() {
+    fn commanded_torque_accelerates_the_car() {
         let mut inv = Inverter::default();
+        let bus = commanding(60.0);
+        assert_eq!(Inverter::commanded_torque(&bus), 60.0);
         for _ in 0..500 {
-            inv.integrate(3650.0, 0.0, true, VEHICLE_DT);
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
         }
         assert!(inv.kmh() > 5.0, "car did not accelerate under drive torque");
         assert!(u16::from_be_bytes(inv.rpm_word()) > INV_STANDSTILL);
     }
 
     #[test]
-    fn park_decouples_the_driveline() {
+    fn no_torque_command_leaves_it_at_rest() {
         let mut inv = Inverter::default();
-        for _ in 0..500 {
-            inv.integrate(3650.0, 0.0, false, VEHICLE_DT);
+        for bus in [CanBus::default(), commanding(0.0)] {
+            for _ in 0..500 {
+                inv.integrate(&bus, 0.0, VEHICLE_DT);
+            }
         }
         assert_eq!(inv.kmh(), 0.0);
         assert_eq!(u16::from_be_bytes(inv.rpm_word()), INV_STANDSTILL);
@@ -133,12 +153,14 @@ mod tests {
     #[test]
     fn braking_brings_it_back_to_rest() {
         let mut inv = Inverter::default();
+        let bus = commanding(60.0);
         for _ in 0..500 {
-            inv.integrate(3650.0, 0.0, true, VEHICLE_DT);
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
         }
         assert!(inv.kmh() > 5.0);
+        let coasting = commanding(0.0);
         for _ in 0..2000 {
-            inv.integrate(0.0, 1.0, true, VEHICLE_DT);
+            inv.integrate(&coasting, 1.0, VEHICLE_DT);
         }
         assert_eq!(inv.kmh(), 0.0);
     }

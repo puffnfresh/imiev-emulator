@@ -24,7 +24,6 @@ const BUS_PUMP_INTERVAL: u64 = 10_000;
 const ECU_MODE_STATUS_CODE: u32 = 0x0080_e595; // drive-engagement handshake stage (climbs to 4 then 5)
 const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
 const ECU_TORQUE_REQUEST: u32 = 0x0080_d384; // EV-ECU motor torque request (signed 16-bit)
-const OP_MODE_DRIVE: u32 = 4; // operating_mode value for DRIVE (energized, torque-commanding)
 
 pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     let mut buf = [0u8; CAN_DLC_MAX];
@@ -258,10 +257,7 @@ impl Simulation {
         let op_mode = ecu.peek(EV_ECU_OPERATING_MODE, 1);
         inverter.drive_dclink = code >= 4 || op_mode >= 4;
         inverter.engaging = code >= 4 && op_mode < 4;
-        let raw = ecu.peek(ECU_TORQUE_REQUEST, 2);
-        let torque_req = if raw > 0x7fff { 0.0 } else { raw as f32 };
-        let coupled = op_mode == OP_MODE_DRIVE && driver.gear.is_forward_drive();
-        inverter.integrate(torque_req, driver.brake_pct / 100.0, coupled, VEHICLE_DT);
+        inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);
         tx.extend(inverter.frames(bus));
         for f in &tx {
             bus.record(*f);
