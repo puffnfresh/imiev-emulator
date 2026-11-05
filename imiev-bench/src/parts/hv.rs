@@ -26,7 +26,8 @@ impl Part for Contactor {
     }
 }
 
-const AC_RELAY_CMD: u32 = 0x0080_e893; // firmware's A/C-compressor relay command variable
+const AC_RELAY_COIL_PORT: u32 = 0x0080_070b; // P11DATA b5 = A/C-compressor relay coil
+const AC_RELAY_COIL_BIT: u8 = 0x20;
 const AC_RELAY_FB_PORT: u32 = 0x0080_070d; // P13DATA b6 = A/C relay feedback
 const AC_RELAY_FB_BIT: u8 = 0x40;
 
@@ -35,7 +36,7 @@ pub struct AcRelay;
 
 impl Part for AcRelay {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        let commanded = chip.peek(AC_RELAY_CMD, 1) != 0;
+        let commanded = chip.gpio_level(AC_RELAY_COIL_PORT) & AC_RELAY_COIL_BIT != 0;
         let fb = if commanded { AC_RELAY_FB_BIT } else { 0 };
         chip.set_gpio_input(AC_RELAY_FB_PORT, AC_RELAY_FB_BIT, fb);
     }
@@ -120,8 +121,10 @@ mod tests {
     fn ac_relay_feedback_tracks_the_command() {
         let mut ecu = System::new(EV_ECU_FW);
         AcRelay.update(&mut ecu, &CanBus::default());
-        // Command off at reset: feedback low.
         assert_eq!(ecu.gpio_level(AC_RELAY_FB_PORT) & AC_RELAY_FB_BIT, 0);
+        ecu.set_gpio_input(AC_RELAY_COIL_PORT, AC_RELAY_COIL_BIT, AC_RELAY_COIL_BIT);
+        AcRelay.update(&mut ecu, &CanBus::default());
+        assert_eq!(ecu.gpio_level(AC_RELAY_FB_PORT) & AC_RELAY_FB_BIT, AC_RELAY_FB_BIT);
     }
 
     #[test]
