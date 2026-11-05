@@ -45,11 +45,6 @@ const WHEEL_SPEED_BASE: [u8; 8] = [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x0
 const INV_STANDSTILL: u16 = 10_000; // rpm word offset (word = 10000 + rpm)
 const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until the link is charged
 const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
-/// The DC link starts charging this long after CNT- closes (the EV-ECU's 0.2 s weld
-/// check with only CNT- closed), then charges through the precharge resistor with
-/// this time constant. Both from a real car's log: 0x288 b4 rises ~0.5 s after READY
-/// and covers 63% in ~50 ms.
-const PRECHARGE_DELAY_S: f32 = 0.21;
 const PRECHARGE_TAU_S: f32 = 0.05;
 const ECU_MODE_DRIVE: u8 = 0x14; // 0x285 b2 once the EV-ECU is in DRIVE
 const INV_GATE_IDS: [u16; 3] = [0x100, 0x110, 0x111]; // gate-driver identity frames
@@ -61,9 +56,7 @@ const INV_STATUS_DRIVE: (u8, u8) = (0x1f, 0x1c); // b6:b7 - gate drivers enabled
 const INV_STATUS_SETTLED_BIT: u8 = 0x10; // 0x288 b6 bit4: inverter status "settled" (steady park or drive)
 
 pub struct Inverter {
-    /// CNT- is closed: the precharge path is about to connect the DC link to the pack.
     pub(crate) hv_connected: bool,
-    connected_s: f32, // how long it has been
     dclink_half: f32, // DC-link voltage / 2
     speed: f32, // m/s
     rpm: f32,   // motor rpm (via the reduction gear)
@@ -71,14 +64,14 @@ pub struct Inverter {
 
 impl Default for Inverter {
     fn default() -> Self {
-        Inverter { hv_connected: false, connected_s: 0.0, dclink_half: INV_DCLINK_IDLE_HALF, speed: 0.0, rpm: 0.0 }
+        Inverter { hv_connected: false, dclink_half: INV_DCLINK_IDLE_HALF, speed: 0.0, rpm: 0.0 }
     }
 }
 
 impl Inverter {
     fn engaging(&self, bus: &CanBus) -> bool {
         let driving = bus.last(ECU_TORQUE_ID).is_some_and(|f| f.data[2] == ECU_MODE_DRIVE);
-        self.connected_s >= PRECHARGE_DELAY_S && !driving
+        self.hv_connected && !driving
     }
 
     fn commanded_torque(bus: &CanBus) -> f32 {
@@ -88,8 +81,7 @@ impl Inverter {
     }
 
     pub(crate) fn integrate(&mut self, bus: &CanBus, brake: f32, dt: f32) {
-        self.connected_s = if self.hv_connected { self.connected_s + dt } else { 0.0 };
-        let target = if self.connected_s >= PRECHARGE_DELAY_S { INV_DCLINK_PACK_HALF as f32 } else { INV_DCLINK_IDLE_HALF };
+        let target = if self.hv_connected { INV_DCLINK_PACK_HALF as f32 } else { INV_DCLINK_IDLE_HALF };
         self.dclink_half += (target - self.dclink_half) * (dt / PRECHARGE_TAU_S).min(1.0);
         self.drive(Self::commanded_torque(bus), brake, dt);
     }
@@ -197,19 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn dc_link_charges_after_the_weld_check() {
+    fn dc_link_charges_once_connected() {
         let mut inv = Inverter::default();
         let mut bus = CanBus::default();
         bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x03, 0, 0, 0, 0, 0]));
         // Contactors open: the link idles near 0 V and the inverter is settled.
         assert_eq!(dclink_and_status(&inv, &bus), (1, INV_STATUS_PARK.0));
-        // CNT- closes: nothing charges during the EV-ECU's weld check...
         inv.hv_connected = true;
-        for _ in 0..steps(PRECHARGE_DELAY_S - 0.01) {
-            inv.integrate(&bus, 0.0, VEHICLE_DT);
-        }
-        assert_eq!(dclink_and_status(&inv, &bus), (1, INV_STATUS_PARK.0));
-        // ...then it charges to the pack within ~0.2 s, reporting not settled.
         for _ in 0..steps(0.25) {
             inv.integrate(&bus, 0.0, VEHICLE_DT);
         }

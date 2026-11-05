@@ -254,7 +254,7 @@ impl Simulation {
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
         }
-        inverter.hv_connected = cnt_minus_closed(ev_ecu.system());
+        inverter.hv_connected = dclink_connected(ev_ecu.system());
         inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);
         tx.extend(inverter.frames(bus));
         for f in &tx {

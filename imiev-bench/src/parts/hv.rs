@@ -5,29 +5,32 @@ use mh8106f::System;
 use crate::adc::ev_ecu_adc;
 use crate::{CanBus, Part};
 
-const COIL_PORT: u32 = 0x0080_0701; // P1DATA - contactor coil-command outputs
-const AUX_SENSE_PORT: u32 = 0x0080_0703; // P3DATA - contactor auxiliary-contact sense inputs
+const COIL_PORT: u32 = 0x0080_0701; // P1DATA - relay coil outputs: P1.5 precharge, P1.6 CNT-, P1.7 CNT+
+const AUX_SENSE_PORT: u32 = 0x0080_0703; // P3DATA - auxiliary-contact sense inputs
 const PRECHARGE_FB_PORT: u32 = 0x0080_0709; // P9DATA b1 = precharge-complete
 const CONTACTOR_FB_BIT: u8 = 0x02; // bit1 on each port
 
-const MAIN_AUX_MASK: u8 = 0x0c; // P3 bits 2,3
+const AUX_MASK: u8 = 0x0e; // P3 bits 1..3
+const PRECHARGE_COIL: u8 = 0x20; // P1.5
+const CNT_MINUS_COIL: u8 = 0x40; // P1.6
+const CNT_PLUS_COIL: u8 = 0x80; // P1.7
 
 #[derive(Default)]
 pub struct Contactor;
 
-fn main_aux_sense(coils: u8) -> u8 {
-    (((coils >> 6) & 1) << 2) | (((coils >> 7) & 1) << 3)
+fn aux_sense(coils: u8) -> u8 {
+    ((coils >> 4) & 0x0c) | (!(coils >> 4) & 0x02)
 }
 
-/// CNT- (P1.6) is commanded closed.
-pub fn cnt_minus_closed(chip: &System) -> bool {
-    chip.gpio_output(COIL_PORT) & 0x40 != 0
+pub fn dclink_connected(chip: &System) -> bool {
+    let coils = chip.gpio_output(COIL_PORT);
+    coils & CNT_MINUS_COIL != 0 && coils & (CNT_PLUS_COIL | PRECHARGE_COIL) != 0
 }
 
 impl Part for Contactor {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        let sense = main_aux_sense(chip.gpio_output(COIL_PORT));
-        chip.set_gpio_input(AUX_SENSE_PORT, MAIN_AUX_MASK, sense);
+        let sense = aux_sense(chip.gpio_output(COIL_PORT));
+        chip.set_gpio_input(AUX_SENSE_PORT, AUX_MASK, sense);
     }
 }
 
@@ -110,15 +113,15 @@ mod tests {
 
     #[test]
     fn contactor_aux_sense_follows_coil_commands() {
-        // No coils: no main aux-sense bits. Both main coils (P1.6/P1.7): both senses follow.
-        assert_eq!(main_aux_sense(0x00), 0x00);
-        assert_eq!(main_aux_sense(0xc0), MAIN_AUX_MASK);
-        assert_eq!(main_aux_sense(0x40), 0x04); // CNT- only -> P3.2
-        assert_eq!(main_aux_sense(0x80), 0x08); // CNT+ only -> P3.3
-        // A fresh ECU commands no main coils, so the part asserts no aux-sense.
+        assert_eq!(aux_sense(0x00), 0x02);
+        assert_eq!(aux_sense(0xe0), 0x0c);
+        assert_eq!(aux_sense(0x20), 0x00);
+        assert_eq!(aux_sense(0x40), 0x06);
+        assert_eq!(aux_sense(0x80), 0x0a);
+        assert_eq!(aux_sense(0x1f), 0x02);
         let mut ecu = System::new(EV_ECU_FW);
         Contactor.update(&mut ecu, &CanBus::default());
-        assert_eq!(ecu.gpio_level(AUX_SENSE_PORT) & MAIN_AUX_MASK, 0);
+        assert_eq!(ecu.gpio_level(AUX_SENSE_PORT) & AUX_MASK, 0x02);
     }
 
     #[test]
