@@ -59,8 +59,6 @@ pub struct System {
     cpu: Cpu,
     mem: Machine,
     interrupts_taken: u64,
-    pc_watch: Option<u32>,
-    pc_hit: bool,
 }
 
 impl System {
@@ -69,18 +67,7 @@ impl System {
             cpu: Cpu::new(),
             mem: Machine::new(firmware),
             interrupts_taken: 0,
-            pc_watch: None,
-            pc_hit: false,
         }
-    }
-
-
-    pub fn watch_pc(&mut self, addr: u32) {
-        self.pc_watch = Some(addr);
-    }
-
-    pub fn take_pc_hit(&mut self) -> bool {
-        core::mem::take(&mut self.pc_hit)
     }
 
     pub fn set_write_watch(&mut self, range: Option<(u32, u32)>) {
@@ -174,9 +161,6 @@ impl System {
     /// take one. Returns the CPU's `step` result (false only on decode failure).
     pub fn step(&mut self) -> bool {
         self.mem.cur_pc = self.cpu.pc;
-        if self.pc_watch == Some(self.cpu.pc) {
-            self.pc_hit = true;
-        }
         // Deliver the hardware way: present the source IVECT at 0x800000, then
         // vector through the EIT entry to the firmware dispatcher.
         if self.cpu.in_eit == 0 && self.cpu.interrupts_enabled() {

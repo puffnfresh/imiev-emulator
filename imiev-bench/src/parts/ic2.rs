@@ -4,75 +4,106 @@ use mh8106f::System;
 
 use crate::{CanBus, Part};
 
-const IC2_Q_MARKER: u32 = 0x0080_8249; // & 0xf0 = slot family (0x10 / 0x30)
-const IC2_Q_ID: u32 = 0x0080_824a; // message id being asked
-const IC2_Q_DATA: u32 = 0x0080_824b; // the data byte the question carries
-const IC2_TX_SLOTS: u32 = 0x0080_81ac; // 30 entries * 4: [id, marker|state, byte2, byte3]
-const IC2_STARTUP_STATE: u32 = 0x0080_825a; // 0->4->0xFFFF(POST done)
-const IC2_TX_DONE_PC: u32 = 0x0001_31ac; // handler reached when a question frame is fully sent
+const SYNC: u8 = 0x55;
+const TRAILER: u8 = 0xaa;
+const FAMILY_10: u8 = 0x10;
+const FAMILY_30: u8 = 0x30;
+const STATUS_ID: u8 = 0x1f;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Question {
+    family: u8,
+    id: u8,
+    data: u8,
+}
+
+#[derive(Default)]
+struct QuestionReader {
+    buf: Vec<u8>,
+}
+
+impl QuestionReader {
+    fn push(&mut self, b: u8) -> Option<Question> {
+        if self.buf.is_empty() && b != SYNC {
+            return None;
+        }
+        self.buf.push(b);
+        let (body, len) = match self.buf.get(1) {
+            None => return None,
+            Some(&FAMILY_10) => (3, 6),
+            Some(&FAMILY_30) => (2, 5),
+            Some(_) => {
+                self.buf.clear();
+                return None;
+            }
+        };
+        if self.buf.len() < len {
+            return None;
+        }
+        let frame = core::mem::take(&mut self.buf);
+        let body_bytes = &frame[1..1 + body];
+        if frame[1 + body] != TRAILER || frame[2 + body] != checksum(body_bytes) {
+            return None;
+        }
+        Some(Question { family: frame[1], id: frame[2], data: if body == 3 { frame[3] } else { 0 } })
+    }
+}
+
+fn checksum(bytes: &[u8]) -> u8 {
+    let mut sum = 0u32;
+    for &b in bytes {
+        sum += b as u32;
+        sum = (sum & 0xff) + (sum >> 8);
+    }
+    !sum as u8
+}
 
 #[derive(Default)]
 pub struct Ic2Companion {
-    armed_watch: bool,
-    question_sent: bool,
+    reader: QuestionReader,
+    question: Option<Question>,
+    started: bool,
     arm_ctr: u32,
+    counter: u8,
+    registers: [u8; 0x20],
 }
 
 impl Ic2Companion {
-    fn reply(chip: &System) -> [u8; 5] {
-        let marker = chip.peek(IC2_Q_MARKER, 1) as u8 & 0xf0;
-        let id = chip.peek(IC2_Q_ID, 1) as u8;
-
-        let mut slot_data = chip.peek(IC2_Q_DATA, 1) as u8;
-        for s in 0..30u32 {
-            let base = IC2_TX_SLOTS + s * 4;
-            let state = chip.peek(base + 1, 1) as u8 & 0x0f;
-            if chip.peek(base, 1) as u8 == id && (state == 3 || state == 4) {
-                slot_data = chip.peek(base + 2, 1) as u8;
-                break;
-            }
+    fn reply(&mut self, q: Question) -> [u8; 5] {
+        let reg = &mut self.registers[q.id as usize % 0x20];
+        if q.family == FAMILY_10 && q.data != q.id {
+            *reg = q.data;
         }
-
-        let post_post = chip.peek(IC2_STARTUP_STATE, 1) as u8 == 0xff;
-        let payload = if post_post && id == 0x01 {
-            [0x00, 0x01, 0x21, 0x00] // id-1 status word (== flash constant)
-        } else if id == 0x1f {
-            [0x11, 0x00, 0x00, 0x00] // status ack (sets the group ack bits)
-        } else if marker == 0x30 {
-            [0x25, id, slot_data, 0xAA] // per-id ack for a 0x30-family slot
+        let value = *reg;
+        let payload = if q.id == STATUS_ID {
+            [0x11, 0x00, 0x00, 0x00]
+        } else if q.family == FAMILY_30 {
+            [0x25, q.id, TRAILER, TRAILER]
         } else {
-            [0x35, id, slot_data, 0xAA] // per-id ack for a 0x10-family slot
+            [0x35, q.id, value, TRAILER]
         };
-
         Self::framed(payload)
     }
 
     fn framed(payload: [u8; 4]) -> [u8; 5] {
-        let mut sum = 0u32;
-        for &b in &payload {
-            sum += b as u32;
-            sum = (sum & 0xff) + (sum >> 8);
-        }
-        [payload[0], payload[1], payload[2], payload[3], !sum as u8]
+        [payload[0], payload[1], payload[2], payload[3], checksum(&payload)]
     }
 }
 
 impl Part for Ic2Companion {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        if !self.armed_watch {
-            chip.watch_pc(IC2_TX_DONE_PC);
-            self.armed_watch = true;
-        }
-        if chip.take_pc_hit() {
-            self.question_sent = true;
+        for b in chip.ic2_take_tx() {
+            if let Some(q) = self.reader.push(b) {
+                self.question = Some(q);
+            }
         }
         if chip.ic2_rx_pending() {
-            return; // previous frame not yet consumed by DMA5
+            return;
         }
         if !chip.ic2_rx_armed() {
             return;
         }
-        if chip.peek(IC2_STARTUP_STATE, 2) == 0xffff {
+        if self.started {
             self.arm_ctr = self.arm_ctr.wrapping_add(1);
             if self.arm_ctr % 64 == 32 {
                 chip.ic2_take_rx_armed();
@@ -81,16 +112,18 @@ impl Part for Ic2Companion {
             }
             if self.arm_ctr.is_multiple_of(64) {
                 chip.ic2_take_rx_armed();
-                let ctr = chip.peek(0x0080_8293, 1) as u8;
-                chip.ic2_answer(&Self::framed([0x33, 0x00, ctr, 0xAA]));
+                chip.ic2_answer(&Self::framed([0x33, 0x00, self.counter, TRAILER]));
+                self.counter = self.counter.wrapping_add(3);
                 return;
             }
         }
-        if self.question_sent {
-            self.question_sent = false;
+        if let Some(q) = self.question.take() {
             chip.ic2_take_rx_armed();
-            let frame = Self::reply(chip);
+            let frame = self.reply(q);
             chip.ic2_answer(&frame);
+            if q.family == FAMILY_30 {
+                self.started = true;
+            }
         }
     }
 }
@@ -100,6 +133,8 @@ mod tests {
     use super::*;
     use crate::adc::EV_ECU_BOOT_ADC;
     use crate::EV_ECU_FW;
+
+    const IC2_STARTUP_STATE: u32 = 0x0080_825a;
 
     #[test]
     fn ic2_handshake_completes_post() {
@@ -121,5 +156,33 @@ mod tests {
             0xffff,
             "IC2 handshake did not complete POST (startup_state != 0xFFFF)"
         );
+    }
+
+    fn read_all(bytes: &[u8]) -> Vec<Question> {
+        let mut r = QuestionReader::default();
+        bytes.iter().filter_map(|&b| r.push(b)).collect()
+    }
+
+    #[test]
+    fn questions_decode_from_the_wire() {
+        let wire = [0x55, 0x10, 0x01, 0x21, 0xaa, 0xcd, 0x55, 0x30, 0x0b, 0xaa, 0xc4];
+        assert_eq!(
+            read_all(&wire),
+            [
+                Question { family: FAMILY_10, id: 0x01, data: 0x21 },
+                Question { family: FAMILY_30, id: 0x0b, data: 0 },
+            ]
+        );
+        let wire = [0x55, 0x10, 0x01, 0x21, 0xaa, 0xce, 0x55, 0x30, 0x0b, 0xaa, 0xc4];
+        assert_eq!(read_all(&wire), [Question { family: FAMILY_30, id: 0x0b, data: 0 }]);
+    }
+
+    #[test]
+    fn a_question_with_its_own_id_reads_the_register_back() {
+        let mut ic2 = Ic2Companion::default();
+        let set = ic2.reply(Question { family: FAMILY_10, id: 0x1e, data: 0xc0 });
+        assert_eq!(set[..4], [0x35, 0x1e, 0xc0, 0xaa]);
+        let read = ic2.reply(Question { family: FAMILY_10, id: 0x1e, data: 0x1e });
+        assert_eq!(read[..4], [0x35, 0x1e, 0xc0, 0xaa]);
     }
 }
