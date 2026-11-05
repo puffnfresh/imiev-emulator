@@ -232,8 +232,14 @@ fn imiev_holds_drive_under_torque() {
     sim.run(300_000_000);
     sim.set_gear(Gear::Drive);
     sim.set_pedal(40.0);
-    sim.run(CYCLES_PER_SECOND);
+    sim.run(3 * CYCLES_PER_SECOND);
     let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
     assert_eq!(sim.ecu_op_mode(), 4, "dropped out of DRIVE under torque; confirmed: {dtcs:?}");
-    assert!(!dtcs.contains(&"P1A1A".to_string()), "P1A1A: the inverter's reported torque disagrees with the command");
+    for (dtc, why) in [
+        ("P1A1A", "the inverter's reported torque disagrees with the command"),
+        ("C200A", "the vacuum pump main relay's switched side doesn't follow it"),
+        ("C200E", "the vacuum pump main relay's coil monitor doesn't follow it"),
+    ] {
+        assert!(!dtcs.iter().any(|d| d == dtc), "{dtc}: {why}");
+    }
 }
