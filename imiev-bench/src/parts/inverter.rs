@@ -38,7 +38,7 @@ const TORQUE_PER_BIT: f32 = 0.1; // Nm
 const BRAKE_FORCE: f32 = 3500.0; // N at full brake
 pub const VEHICLE_DT: f32 = crate::BUS_PUMP_INTERVAL as f32 / crate::CYCLES_PER_SECOND as f32;
 
-const INV_RPM_ID: u16 = 0x288; // b0:b1 const 0x07D0, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
+const INV_RPM_ID: u16 = 0x288; // b0:b1 torque*10+2000, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
 const INV_TORQUE_ID: u16 = 0x298;
 const WHEEL_SPEED_ID: u16 = 0x412; // ignition status + wheel speed (b1 = km/h)
 const WHEEL_SPEED_BASE: [u8; 8] = [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x06];
@@ -58,13 +58,14 @@ const INV_STATUS_SETTLED_BIT: u8 = 0x10; // 0x288 b6 bit4: inverter status "sett
 pub struct Inverter {
     pub(crate) hv_connected: bool,
     dclink_half: f32, // DC-link voltage / 2
+    torque_nm: f32,
     speed: f32, // m/s
-    rpm: f32,   // motor rpm (via the reduction gear)
+    rpm: f32, // motor rpm (via the reduction gear)
 }
 
 impl Default for Inverter {
     fn default() -> Self {
-        Inverter { hv_connected: false, dclink_half: INV_DCLINK_IDLE_HALF, speed: 0.0, rpm: 0.0 }
+        Inverter { hv_connected: false, dclink_half: INV_DCLINK_IDLE_HALF, torque_nm: 0.0, speed: 0.0, rpm: 0.0 }
     }
 }
 
@@ -87,6 +88,7 @@ impl Inverter {
     }
 
     fn drive(&mut self, torque_nm: f32, brake: f32, dt: f32) {
+        self.torque_nm = torque_nm;
         let f_trac = torque_nm * GEAR / WHEEL_R;
         let f_drag = 0.5 * RHO * CDA * self.speed * self.speed;
         let f_roll = if self.speed > 0.01 { CRR * MASS * G } else { 0.0 };
@@ -100,6 +102,11 @@ impl Inverter {
         self.speed * 3.6
     }
 
+    fn torque_word(&self) -> [u8; 2] {
+        let w = (self.torque_nm / TORQUE_PER_BIT + TORQUE_OFFSET).round().clamp(0.0, u16::MAX as f32) as u16;
+        w.to_be_bytes()
+    }
+
     fn rpm_word(&self) -> [u8; 2] {
         let w = (INV_STANDSTILL as f32 + self.rpm).clamp(0.0, u16::MAX as f32) as u16;
         w.to_be_bytes()
@@ -107,6 +114,7 @@ impl Inverter {
 
     pub(crate) fn frames(&self, bus: &CanBus) -> Vec<CanFrame> {
         let [wh, wl] = self.rpm_word();
+        let [th, tl] = self.torque_word();
         let gear418 = bus.last(ECU_GEAR_ID).map(|f| f.data[0]).unwrap_or(0);
         let drive_gear = matches!(gear418, 0x44 | 0x52 | 0x42 | 0x43); // D | R | B | C
         let (mut b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
@@ -117,7 +125,7 @@ impl Inverter {
         let mut speed_frame = WHEEL_SPEED_BASE;
         speed_frame[1] = self.kmh().clamp(0.0, 254.0) as u8;
         let mut out = vec![
-            frame(INV_RPM_ID, &[0x07, 0xD0, wh, wl, dclink, 0x00, b6, b7]),
+            frame(INV_RPM_ID, &[th, tl, wh, wl, dclink, 0x00, b6, b7]),
             frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
             frame(WHEEL_SPEED_ID, &speed_frame),
         ];
@@ -154,6 +162,7 @@ mod tests {
         }
         assert!(inv.kmh() > 5.0, "car did not accelerate under drive torque");
         assert!(u16::from_be_bytes(inv.rpm_word()) > INV_STANDSTILL);
+        assert_eq!(u16::from_be_bytes(inv.torque_word()), 2600);
     }
 
     #[test]

@@ -225,3 +225,15 @@ fn imiev_drive_gear_reaches_the_ev_ecu() {
     let torque = sim.bus().last(0x285).map(|f| u16::from_be_bytes([f.data[0], f.data[1]]));
     assert!(torque.is_some_and(|t| t > 2000), "the EV-ECU commands no drive torque on 0x285 ({torque:?})");
 }
+
+#[test]
+fn imiev_holds_drive_under_torque() {
+    let mut sim = Simulation::imiev();
+    sim.run(300_000_000);
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(40.0);
+    sim.run(CYCLES_PER_SECOND);
+    let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    assert_eq!(sim.ecu_op_mode(), 4, "dropped out of DRIVE under torque; confirmed: {dtcs:?}");
+    assert!(!dtcs.contains(&"P1A1A".to_string()), "P1A1A: the inverter's reported torque disagrees with the command");
+}
