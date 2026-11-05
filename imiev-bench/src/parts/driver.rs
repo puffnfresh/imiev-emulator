@@ -30,9 +30,19 @@ pub enum Gear {
     Comfort,
 }
 
-const DRIVE_READY_MATRIX: u8 = SHIFT_MATRIX_MASK & !(1 << 5);
-
 impl Gear {
+    fn matrix(self) -> u8 {
+        let bit = match self {
+            Gear::Park => 5,
+            Gear::Reverse => 4,
+            Gear::Neutral => 3,
+            Gear::Drive => 2,
+            Gear::Eco => 1,
+            Gear::Comfort => 0,
+        };
+        SHIFT_MATRIX_MASK & !(1 << bit)
+    }
+
     pub fn is_forward_drive(self) -> bool {
         matches!(self, Gear::Drive | Gear::Eco | Gear::Comfort)
     }
@@ -63,8 +73,9 @@ fn pedal_raw(pct: f32, released: u16, full: u16) -> u16 {
 
 impl Part for DriverControls {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        chip.set_gpio_input(SHIFT_MAIN_PORT, SHIFT_MATRIX_MASK, DRIVE_READY_MATRIX);
-        chip.set_gpio_input(SHIFT_SUB_PORT, SHIFT_MATRIX_MASK, DRIVE_READY_MATRIX);
+        let m = self.gear.matrix();
+        chip.set_gpio_input(SHIFT_MAIN_PORT, SHIFT_MATRIX_MASK, m);
+        chip.set_gpio_input(SHIFT_SUB_PORT, SHIFT_MATRIX_MASK, m);
         let key = |bits| if self.key_on { bits } else { 0 };
         chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
         chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));

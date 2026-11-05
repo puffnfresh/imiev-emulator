@@ -211,3 +211,16 @@ fn imiev_selecting_drive_engages_and_moves() {
     let kmh1 = sim.bus().last(0x412).map(|f| f.data[1]).unwrap_or(0);
     assert!(kmh1 > kmh0, "vehicle did not accelerate after selecting Drive ({kmh0} -> {kmh1} km/h)");
 }
+
+#[test]
+fn imiev_drive_gear_reaches_the_ev_ecu() {
+    let mut sim = Simulation::imiev();
+    sim.run(250_000_000);
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(60.0);
+    sim.run(30_000_000);
+    let gear = sim.bus().last(0x418).map(|f| f.data[0]);
+    assert_eq!(gear, Some(b'D'), "the EV-ECU does not see the lever in D");
+    let torque = sim.bus().last(0x285).map(|f| u16::from_be_bytes([f.data[0], f.data[1]]));
+    assert!(torque.is_some_and(|t| t > 2000), "the EV-ECU commands no drive torque on 0x285 ({torque:?})");
+}
