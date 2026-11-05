@@ -2022,7 +2022,7 @@ impl crate::item::Reading for EvMode {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &EV_MODE[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -2040,7 +2040,7 @@ impl crate::item::Reading for EvSubMode1 {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &EV_SUB_MODE1[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -2058,7 +2058,7 @@ impl crate::item::Reading for EvSubMode2 {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &EV_SUB_MODE2[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -3462,7 +3462,7 @@ impl crate::item::Reading for ModeTransitionPriority {
         At { versions: &[0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &MODE_TRANSITION_PRIORITY[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -4045,7 +4045,7 @@ impl crate::item::Reading for ObcVariationInformation {
         At { versions: &[0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x24), item: &OBC_VARIATION_INFORMATION[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.raw().map(|n| Self(n))
+        value.raw().map(Self)
     }
 }
 
@@ -4340,7 +4340,7 @@ impl crate::item::Reading for OperationMode {
         At { versions: &[0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &OPERATION_MODE[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -4358,7 +4358,7 @@ impl crate::item::Reading for OrderOfModeTransferPriority {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &ORDER_OF_MODE_TRANSFER_PRIORITY[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -4491,7 +4491,7 @@ impl crate::item::Reading for PowerSwCycle {
         At { versions: &[0x8000, 0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &POWER_SW_CYCLE[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -4877,7 +4877,7 @@ impl crate::item::Reading for QcPin {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &QC_PIN[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -5768,7 +5768,7 @@ impl crate::item::Reading for ShiftInhibitorSwFailCounter {
         At { versions: &[0x8000, 0x8001, 0x8003, 0x0003, 0x0004, 0x0005], source: Source::FreezeFrame, item: &SHIFT_INHIBITOR_SW_FAIL_COUNTER[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -5851,7 +5851,7 @@ impl crate::item::Reading for ShiftPositionControlValue {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x24), item: &SHIFT_POSITION_CONTROL_VALUE[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -6240,7 +6240,7 @@ impl crate::item::Reading for SubMode1 {
         At { versions: &[0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &SUB_MODE1[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -6258,7 +6258,7 @@ impl crate::item::Reading for SubMode2 {
         At { versions: &[0x8001, 0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::FreezeFrame, item: &SUB_MODE2[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -6544,7 +6544,7 @@ impl crate::item::Reading for VCanStatus {
         At { versions: &[0x8003, 0x0003, 0x0004, 0x0005, 0x0100, 0x0200, 0x0300, 0x0400], source: Source::Record(0x20), item: &V_CAN_STATUS[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 

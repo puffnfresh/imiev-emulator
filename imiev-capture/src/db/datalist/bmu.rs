@@ -13764,7 +13764,7 @@ impl crate::item::Reading for IgnitionCycle {
         At { versions: &[0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0101, 0x0104, 0x0010, 0x0011], source: Source::FreezeFrame, item: &IGNITION_CYCLE[0] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.count().map(|n| Self(n))
+        value.count().map(Self)
     }
 }
 
@@ -13882,7 +13882,7 @@ impl crate::item::Reading for MaximumTemperatureModuleId {
         At { versions: &[0x0003, 0x0010, 0x0011], source: Source::Record(0x01), item: &MAXIMUM_TEMPERATURE_MODULE_ID[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.number().map(|n| Self(n))
+        value.number().map(Self)
     }
 }
 
@@ -13902,7 +13902,7 @@ impl crate::item::Reading for MaximumVoltageCellId {
         At { versions: &[0x0003, 0x0010, 0x0011], source: Source::Record(0x01), item: &MAXIMUM_VOLTAGE_CELL_ID[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.number().map(|n| Self(n))
+        value.number().map(Self)
     }
 }
 
@@ -13922,7 +13922,7 @@ impl crate::item::Reading for MinimumTemperatureModuleId {
         At { versions: &[0x0003, 0x0010, 0x0011], source: Source::Record(0x01), item: &MINIMUM_TEMPERATURE_MODULE_ID[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.number().map(|n| Self(n))
+        value.number().map(Self)
     }
 }
 
@@ -13942,7 +13942,7 @@ impl crate::item::Reading for MinimumVoltageCellId {
         At { versions: &[0x0003, 0x0010, 0x0011], source: Source::Record(0x01), item: &MINIMUM_VOLTAGE_CELL_ID[1] },
     ];
     fn decode(value: &Value) -> Option<Self> {
-        value.number().map(|n| Self(n))
+        value.number().map(Self)
     }
 }
 
