@@ -7,12 +7,12 @@ use crate::{frame, BusSource, CanBus};
 const CHASSIS_FRAMES: &[(u16, [u8; 8])] = &[
     (0x424, [0x43, 0x00, 0x0C, 0x00, 0xCF, 0x94, 0x03, 0xFF]), // ETACS lights/locks
     (0x231, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), // brake switch (b4 = 0, released)
-    (0x200, [0x00, 0x03, 0xC0, 0x00, 0xC0, 0x00, 0xFF, 0xFF]),
     (0x3a4, [0x0D, 0x90, 0x5E, 0x79, 0x58, 0x30, 0x00, 0x5E]),
     (0x286, [0, 0, 0, 0, 0, 0, 0, 0]), // EV-ECU secondary command
     (0x5a1, [0, 0, 0, 0, 0, 0, 0, 0]), // diagnostic-status mailboxes
     (0x565, [0, 0, 0, 0, 0, 0, 0, 0]),
     (0x564, [0, 0, 0, 0, 0, 0, 0, 0]),
+    (0x384, [0x00, 0x00, 0x00, 0x1F, 0x00, 0x41, 0x41, 0x00]), // heater/A-C compressor
 ];
 
 #[derive(Default)]
@@ -41,6 +41,11 @@ pub const VEHICLE_DT: f32 = crate::BUS_PUMP_INTERVAL as f32 / crate::CYCLES_PER_
 const INV_RPM_ID: u16 = 0x288; // b0:b1 torque*10+2000, b2:b3 rpm+10000, b4 DC-link/2, b6:b7 status
 const INV_TORQUE_ID: u16 = 0x298;
 const WHEEL_SPEED_ID: u16 = 0x412; // ignition status + wheel speed (b1 = km/h)
+const ABS_FRONT_ID: u16 = 0x200; // b2:b3 / b4:b5 = front left / right wheel rpm word
+const ABS_REAR_ID: u16 = 0x208; // b2:b3 brake pedal, b4:b5 / b6:b7 = rear right / left wheel rpm word
+const ABS_SPEED_ID: u16 = 0x215; // b0:b1 = vehicle speed * 128 (km/h)
+const WHEEL_RPM_ZERO: u16 = 0xc000; // wheel rpm word = 0xc000 + rpm * 2 (the EV-ECU reads the low 14 bits)
+const BRAKE_PEDAL_RELEASED: [u8; 2] = [0x60, 0x00];
 const WHEEL_SPEED_BASE: [u8; 8] = [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x06];
 const INV_STANDSTILL: u16 = 10_000; // rpm word offset (word = 10000 + rpm)
 const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until the link is charged
@@ -107,6 +112,11 @@ impl Inverter {
         w.to_be_bytes()
     }
 
+    fn wheel_word(&self) -> [u8; 2] {
+        let rpm = self.speed / WHEEL_CIRC * 60.0;
+        (WHEEL_RPM_ZERO + (rpm * 2.0).clamp(0.0, 0x3ffe as f32) as u16).to_be_bytes()
+    }
+
     fn rpm_word(&self) -> [u8; 2] {
         let w = (INV_STANDSTILL as f32 + self.rpm).clamp(0.0, u16::MAX as f32) as u16;
         w.to_be_bytes()
@@ -129,6 +139,12 @@ impl Inverter {
             frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
             frame(WHEEL_SPEED_ID, &speed_frame),
         ];
+        let [vh, vl] = ((self.kmh() * 128.0).clamp(0.0, u16::MAX as f32) as u16).to_be_bytes();
+        let [rh, rl] = self.wheel_word();
+        let [bh, bl] = BRAKE_PEDAL_RELEASED;
+        out.push(frame(ABS_FRONT_ID, &[0x00, 0x03, rh, rl, rh, rl, 0xff, 0xff]));
+        out.push(frame(ABS_REAR_ID, &[0x00, 0x20, bh, bl, rh, rl, rh, rl]));
+        out.push(frame(ABS_SPEED_ID, &[vh, vl, 0, 0, 0, 0, 0, 0]));
         for id in INV_GATE_IDS {
             out.push(frame(id, &[INV_GATE_ID_WORD[0], INV_GATE_ID_WORD[1], 0, 0, 0, 0, 0, 0]));
         }
@@ -163,6 +179,24 @@ mod tests {
         assert!(inv.kmh() > 5.0, "car did not accelerate under drive torque");
         assert!(u16::from_be_bytes(inv.rpm_word()) > INV_STANDSTILL);
         assert_eq!(u16::from_be_bytes(inv.torque_word()), 2600);
+    }
+
+    #[test]
+    fn abs_reports_the_car_s_speed() {
+        let mut inv = Inverter::default();
+        let bus = commanding(60.0);
+        let word = |inv: &Inverter, id, at: usize| {
+            let f = inv.frames(&bus).into_iter().find(|f| f.id == id).unwrap();
+            u16::from_be_bytes([f.data[at], f.data[at + 1]])
+        };
+        assert_eq!(word(&inv, ABS_SPEED_ID, 0), 0);
+        assert_eq!(word(&inv, ABS_REAR_ID, 4), WHEEL_RPM_ZERO);
+        for _ in 0..steps(3.0) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        assert_eq!(word(&inv, ABS_SPEED_ID, 0), (inv.kmh() * 128.0) as u16);
+        let rpm = (word(&inv, ABS_FRONT_ID, 2) & 0x3fff) as f32 * 0.5;
+        assert!((rpm * WHEEL_CIRC * 60.0 / 1000.0 - inv.kmh()).abs() < 0.1, "wheel rpm {rpm} vs {} km/h", inv.kmh());
     }
 
     #[test]
