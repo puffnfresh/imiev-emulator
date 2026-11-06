@@ -155,7 +155,7 @@ impl Simulation {
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(Contactor))
             .with_part(Box::new(AcRelay))
-            .with_part(Box::new(VacuumPump))
+            .with_part(Box::new(VacuumPump::default()))
             .with_part(Box::new(AirbagEcu::default()))
             .with_part(Box::new(Charger))
             .with_local_part(Box::new(Ic2Companion::default()));
@@ -211,11 +211,11 @@ impl Simulation {
         self.ev_ecu.system().peek(ECU_TORQUE_REQUEST, 2) as i16 as i32
     }
 
-    pub fn ecu_dtcs(&self) -> Vec<(String, bool)> {
+    pub fn ecu_dtcs(&self) -> Vec<(dtc::Code, bool)> {
         dtc::scan(self.ev_ecu.system(), &dtc::ECU_DTC)
     }
 
-    pub fn bmu_dtcs(&self) -> Vec<(String, bool)> {
+    pub fn bmu_dtcs(&self) -> Vec<(dtc::Code, bool)> {
         dtc::scan(self.bmu.system(), &dtc::BMU_DTC)
     }
 

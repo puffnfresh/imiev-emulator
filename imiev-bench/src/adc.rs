@@ -27,6 +27,7 @@ pub(crate) mod ev_ecu_adc {
     pub const ACCEL_1_SUPPLY: usize = 10; // accelerator sensor 1 (main) 5V supply
     pub const ACCEL_2_SUPPLY: usize = 11; // accelerator sensor 2 (sub) 5V supply
     pub const CHARGE_PORT: usize = 12; // charge-port connection sense
+    pub const VACUUM_PUMP_VOLTAGE: usize = 13; // brake vacuum pump motor supply sense
 }
 
 pub(crate) const BMU_BOOT_ADC: &[(usize, u16)] = &[

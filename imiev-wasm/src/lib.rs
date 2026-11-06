@@ -114,7 +114,7 @@ impl Sim {
     }
 }
 
-fn fmt_dtcs(dtcs: Vec<(String, bool)>) -> Vec<String> {
+fn fmt_dtcs(dtcs: Vec<(imiev_bench::dtc::Code, bool)>) -> Vec<String> {
     dtcs.into_iter()
         .map(|(code, confirmed)| {
             format!("{code} ({})", if confirmed { "confirmed" } else { "pending" })
