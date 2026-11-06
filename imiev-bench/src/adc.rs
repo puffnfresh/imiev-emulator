@@ -12,7 +12,7 @@ pub(crate) mod bmu_adc {
     pub const PACK_CURRENT_LO: usize = 3; // main shunt, LOW range  (0x200 = 0 A)
     pub const RELAY_SUPPLY: usize = 4; // EV-control-relay 12V rail (DTC P1A4D)
     pub const TEMP_SENSOR_2: usize = 9; // pack temperature sensor 2 (same sample task as 1)
-    pub const TEMP_SENSOR_3: usize = 0xB; // pack temperature sensor 3
+    pub const COOLING_FAN_MONITOR: usize = 0xB; // battery cooling fan feedback, 5 V full scale
 }
 
 pub(crate) mod ev_ecu_adc {
@@ -35,7 +35,7 @@ pub(crate) const BMU_BOOT_ADC: &[(usize, u16)] = &[
     (bmu_adc::RELAY_SUPPLY, SUPPLY_12V_OK),
     (bmu_adc::TEMP_SENSOR_1, 0x330), // ~mid-range temperature
     (bmu_adc::TEMP_SENSOR_2, ADC_MIDSCALE),
-    (bmu_adc::TEMP_SENSOR_3, ADC_MIDSCALE),
+    (bmu_adc::COOLING_FAN_MONITOR, 0),
     (bmu_adc::PACK_CURRENT_HI, SHUNT_ZERO_A),
     (bmu_adc::PACK_CURRENT_LO, SHUNT_ZERO_A),
 ];

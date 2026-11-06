@@ -268,6 +268,14 @@ fn imiev_idles_in_ready_without_dtcs() {
         assert_ecu_not_confirmed(&sim, dtc, why);
     }
     assert!(dtcs.is_empty(), "DTCs confirmed idling in READY: {dtcs:?}");
+    let bmu: Vec<String> = sim.bmu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    for (dtc, why) in [
+        ("P1AB5", "CMU01 reports a temperature below -30 C (an unfed sensor reads -50)"),
+        ("P1A8E", "CMU01's balancing status (b1 of its first response) is not 0"),
+        ("P1AC3", "the battery cooling fan's feedback is high while it is at rest"),
+    ] {
+        assert!(!bmu.iter().any(|d| d == dtc), "{dtc}: {why}");
+    }
 }
 
 #[test]
