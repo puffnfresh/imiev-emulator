@@ -23262,11 +23262,12 @@ void decode_condenser_init(void)
 }
 
 
-//=== 0x000297ec decode_can_pedal_pair [NAMED] (calls=7)
+//=== 0x000297ec decode_front_wheel_speeds [NAMED] (calls=7)
 
-/* unpack two 14-bit 0x3fff sensor values *scale, telltale [conf: med] */
+/* RX 0x200 b2:b5: front left/right wheel rpm words (low 14 bits * 0.5 rpm, 0x3fff invalid). Was decode_can_pedal_pair
+   [conf: med] */
 
-void decode_can_pedal_pair(undefined4 *param_1)
+void decode_front_wheel_speeds(undefined4 *param_1)
 
 {
   short sVar1;
@@ -23351,11 +23352,12 @@ void build_frame_c050_reset(void)
 }
 
 
-//=== 0x00029a1c decode_can_analog_pair [NAMED] (calls=4)
+//=== 0x00029a1c decode_rear_wheel_speeds [NAMED] (calls=4)
 
-/* RX decode 2x14-bit analog w/ 0x3fff sentinel -> c054/c052 [conf: high] */
+/* RX 0x208 b4:b7: rear right/left wheel rpm (low 14 bits * 0.5 rpm, 0x3fff invalid) -> 0x80d050/0x80d054; P1B25/P1B24
+   while invalid. Was decode_can_analog_pair [conf: high] */
 
-void decode_can_analog_pair(undefined4 *param_1)
+void decode_rear_wheel_speeds(undefined4 *param_1)
 
 {
   bool bVar1;
@@ -23435,11 +23437,12 @@ void decode_can_temp_a_clear(void)
 }
 
 
-//=== 0x00029c30 decode_can_temp_a [NAMED] (calls=4)
+//=== 0x00029c30 decode_vehicle_speed [NAMED] (calls=4)
 
-/* unpack 0x80bc63 CAN word ->0x80c066, 0xffff invalid, telltale [conf: med] */
+/* RX 0x215 b0:b1: vehicle speed / 128 km/h (0xffff invalid) -> vehicle_speed_kmh; P1B0B while invalid. Was
+   decode_can_temp_a [conf: high] */
 
-void decode_can_temp_a(undefined4 *param_1)
+void decode_vehicle_speed(undefined4 *param_1)
 
 {
   bool bVar1;
@@ -34368,14 +34371,14 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
             (&drive_state_ready,&charge_voltage_cf54,&motor_speed_index_val,&motor_speed_scaled,&drive_ratio_term,
              &motor_speed,&power_pack_current,&DAT_0080cf0c,&DAT_0080cf28,&DAT_0080cf2c,&DAT_0080cf30,
              &motor_current_meas,&power_table_input_a,&power_lim_hi_a,&power_lim_lo_a,&power_input_e470_a,
-             &available_power_signal,&DAT_0080d054,&DAT_0080d050,&DAT_0080d048,&DAT_0080d04c,&DAT_0080d6a6,
-             (char *)&gear_code,&DAT_0080d5ab,&DAT_0080d5d2,&DAT_0080d5d3,&DAT_0080d5e6,&power_demand_signal,
-             &power_pack_voltage,(char *)&mode_command,&measured_power,&measured_power_hyst2,&overspeed_latch_d82e,
-             &gear_pos2_enable,&shift_eco_enable,&drive_enable_latched,&power_source_select,&dtc_U1901_stage,
-             &fault_aggregate_d80c,&fault_aggregate_a,&DAT_0080df1e,&torque_cmd_nm,&temp_value_cf80,&ready_contactor_fb,
-             &DAT_0080d603,&precharge_contactor_fb,&DAT_0080d605,&charging_contactor_fb_80d606,&DAT_0080d607,
-             &DAT_0080d608,&DAT_0080d609,&status_float_cf84,&DAT_0080cf88,&DAT_0080cf8c,&DAT_0080cf90,&DAT_0080d60a,
-             &charge_volt_a,&charge_volt_b);
+             &available_power_signal,&rear_left_wheel_rpm,&rear_right_wheel_rpm,&DAT_0080d048,&DAT_0080d04c,
+             &DAT_0080d6a6,(char *)&gear_code,&DAT_0080d5ab,&DAT_0080d5d2,&DAT_0080d5d3,&DAT_0080d5e6,
+             &power_demand_signal,&power_pack_voltage,(char *)&mode_command,&measured_power,&measured_power_hyst2,
+             &overspeed_latch_d82e,&gear_pos2_enable,&shift_eco_enable,&drive_enable_latched,&power_source_select,
+             &dtc_U1901_stage,&fault_aggregate_d80c,&fault_aggregate_a,&DAT_0080df1e,&torque_cmd_nm,&temp_value_cf80,
+             &ready_contactor_fb,&DAT_0080d603,&precharge_contactor_fb,&DAT_0080d605,&charging_contactor_fb_80d606,
+             &DAT_0080d607,&DAT_0080d608,&DAT_0080d609,&status_float_cf84,&DAT_0080cf88,&DAT_0080cf8c,&DAT_0080cf90,
+             &DAT_0080d60a,&charge_volt_a,&charge_volt_b);
   regen_torque_curve();
   mode4_condenser_gate();
   dtc_mirror();
@@ -34545,7 +34548,7 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   DAT_0080b4d6 = mode_shutdown_active;
   _DAT_0080d220 =
        (ushort)charge_active_flag + (ushort)demand_permit_flag * 2 + (ushort)shutdown_permit * 4 +
-       (ushort)dtc_d826_flag * 8 + (ushort)shift_reverse_enable * 0x10 + (ushort)overspeed_latch_d82e * 0x20 +
+       (ushort)dtc_d826_flag * 8 + (ushort)obc_wake_latched * 0x10 + (ushort)overspeed_latch_d82e * 0x20 +
        (ushort)gear_pos2_enable * 0x40 + (ushort)inhibit_latch_out * 0x80 + (ushort)drive_inhibit_final * 0x100 +
        (ushort)dtc_or_latch_d880 * 0x200 + (ushort)latch_d884 * 0x400 + (ushort)gear_park_neutral_latch_80d831 * 0x800 +
        (ushort)drive_ready_cond_a * 0x1000 + DAT_0080a85e + (ushort)charge_substate_d842 * 0x4000 +
@@ -34922,7 +34925,7 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   dtc_monitor_U1110();
   dtc_monitor_52_derate();
   u111c_bmu_can_timeout_detector();
-  dtc_monitor_idx54();
+  dtc_monitor_U111D();
   dtc_monitor_U1160();
   dtc_monitor_idx93();
   p1a19_emcu_shutdown_detector();
@@ -35126,7 +35129,7 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   DAT_0080e834 = inhibit_latch_out;
   DAT_0080e7f9 = mode_cmd_shadow_d;
   DAT_0080e835 = drive_inhibit_final;
-  DAT_0080e836 = telltale_d857;
+  DAT_0080e836 = obc_power_relay_cmd;
   DAT_0080e837 = latch_d884;
   DAT_0080e838 = mode_default_flag_f;
   DAT_0080e839 = DAT_0080d84f;
@@ -35172,7 +35175,7 @@ void mode_arbiter(undefined4 param_1,undefined4 param_2,undefined4 param_3,undef
   DAT_0080e85f = drive_ready_cond_a;
   DAT_0080e860 = mode_shutdown_active;
   DAT_0080e861 = dtc_d826_flag;
-  DAT_0080e862 = shift_reverse_enable;
+  DAT_0080e862 = obc_wake_latched;
   DAT_0080e863 = overspeed_latch_d82e;
   DAT_0080e864 = gear_pos2_enable;
   DAT_0080e865 = DAT_0080d83e;
@@ -38406,7 +38409,7 @@ void latch_measured_power_snapshot(void)
   DAT_0080e507 = mode_a_flag2;
   DAT_0080e508 = mode_a_active_flag;
   battery_temp_mirror_a = charge_voltage_cf54;
-  battery_temp_mirror_b = charge_voltage_cf64;
+  battery_temp_mirror_b = vacuum_pressure;
   return;
 }
 
@@ -38590,7 +38593,7 @@ void freezeframe_snapshot_a(void)
   *(byte *)((int)piVar2 + 0xb9e) = demand_permit_flag;
   *(byte *)((int)piVar2 + 0xb9f) = shutdown_permit;
   *(byte *)(piVar2 + 0x2e8) = dtc_d826_flag;
-  *(byte *)((int)piVar2 + 0xba1) = shift_reverse_enable;
+  *(byte *)((int)piVar2 + 0xba1) = obc_wake_latched;
   *(byte *)((int)piVar2 + 0xba2) = overspeed_latch_d82e;
   *(byte *)((int)piVar2 + 0xba3) = gear_pos2_enable;
   *(byte *)(piVar2 + 0x2e9) = inhibit_latch_out;
@@ -40939,7 +40942,7 @@ void dtc_monitor_precharge_a(void)
   debounce_up_counter_u8
             ((char *)((int)piVar4 + 0xb55),(byte *)(piVar4 + 0x151),(byte *)((int)piVar4 + 0xb56),
              (byte *)(psVar5 + 0x1446));
-  if (((gear_pos2_enable == 0) && (shift_reverse_enable == 0)) && (*(char *)((int)piVar4 + 0xb56) == '\0')) {
+  if (((gear_pos2_enable == 0) && (obc_wake_latched == 0)) && (*(char *)((int)piVar4 + 0xb56) == '\0')) {
     uVar2 = 0;
   }
   else {
@@ -40950,7 +40953,7 @@ void dtc_monitor_precharge_a(void)
   debounce_counter_up((char *)((int)piVar4 + 0xb57),(ushort *)(piVar4 + 0x10c),(undefined1 *)(piVar4 + 0x2d6),
                       (ushort *)(psVar5 + 0x144c));
   if (((((DAT_0080d5ec == '\0') && ((drive_state_ready == 0 || (DAT_0080d5ea == '\0')))) && (gear_pos2_enable == 0)) &&
-      (shift_reverse_enable == 0)) || (*(char *)(piVar4 + 0x2d5) != '\0')) {
+      (obc_wake_latched == 0)) || (*(char *)(piVar4 + 0x2d5) != '\0')) {
     uVar2 = 1;
   }
   else {
@@ -40960,10 +40963,10 @@ void dtc_monitor_precharge_a(void)
   two_stage_latch((byte *)(piVar4 + 0x2d6),(byte *)((int)piVar4 + 0xb59),(undefined1 *)((int)piVar4 + 0xb5a),
                   (undefined1 *)(psVar5 + 0x1452));
   if ((bVar3 == 0) && ((*(char *)((int)piVar4 + 0xb5a) == '\0' || (bVar1 != 0)))) {
-    precharge_fault_latch = 0;
+    obc_power_relay_req = 0;
   }
   else {
-    precharge_fault_latch = 1;
+    obc_power_relay_req = 1;
   }
   return;
 }
@@ -42778,13 +42781,13 @@ LAB_00066028:
   telltale_d856 = 0;
 LAB_00066044:
   if ((int)((uint)fault_lamp_control << 0x1d) < 0) {
-    telltale_d857 = (byte)(((uint)uds_routine_result_flags._0_1_ << 0x1d) >> 0x1f);
+    obc_power_relay_cmd = (byte)(((uint)uds_routine_result_flags._0_1_ << 0x1d) >> 0x1f);
   }
-  else if (((precharge_fault_latch == 0) || (DAT_0080d6ba != '\0')) || (bVar1)) {
-    telltale_d857 = 0;
+  else if (((obc_power_relay_req == 0) || (DAT_0080d6ba != '\0')) || (bVar1)) {
+    obc_power_relay_cmd = 0;
   }
   else {
-    telltale_d857 = 1;
+    obc_power_relay_cmd = 1;
   }
   if ((int)((uint)fault_lamp_control << 0x1e) < 0) {
     telltale_d858 = (byte)(((uint)uds_routine_result_flags._0_1_ << 0x1e) >> 0x1f);
@@ -42868,7 +42871,7 @@ void latch_d820_d821(void)
   byte bVar1;
   
   latch_d820 = DAT_0080d5f3;
-  bVar1 = DAT_0080d682;
+  bVar1 = obc_0x389_received;
   if (latch_e95f != 0) {
     bVar1 = latch_e95f;
   }
@@ -46534,7 +46537,7 @@ void dtc_monitor_3e_derate(void)
   }
   DAT_0080dd08 = 100;
   derate_debounce((char *)&dtc_P0A0A_precond,&DAT_0080dd08,&dtc_P0A0A_deb_out,&DAT_0080dd0a,(ushort *)&DAT_00810450);
-  if ((*(char *)((int)psVar4 + 0x3ef) == '\0') || (3.0 < derate_ref_d058)) {
+  if ((*(char *)((int)psVar4 + 0x3ef) == '\0') || (3.0 < vehicle_speed_kmh)) {
     cVar1 = '\0';
   }
   else {
@@ -48693,7 +48696,7 @@ void dtc_monitor_P1A10(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((dtc_U111D_in == 0) && (gpio_bit_shift_input != 0)) && (precondition_flag_f0 != 0)) {
+  if (((dtc_U111D_in == 0) && (obc_power_relay_contact != 0)) && (precondition_flag_f0 != 0)) {
     dtc_29_raw = 1;
   }
   else {
@@ -48701,7 +48704,7 @@ void dtc_monitor_P1A10(void)
   }
   AD08DT4 = 0x1e;
   debounce_counter((char *)&dtc_29_raw,&AD08DT4,&DAT_0080e255,&DAT_0080ddda,&DAT_0080fff4);
-  if ((*(char *)((int)piVar2 + 0x60f) == '\0') && (gpio_bit_shift_input == 0)) {
+  if ((*(char *)((int)piVar2 + 0x60f) == '\0') && (obc_power_relay_contact == 0)) {
     uVar1 = 1;
   }
   else {
@@ -48753,7 +48756,7 @@ void dtc_monitor_P1A11(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((dtc_U111D_in == 0) || (gpio_bit_shift_input != 0)) || (precondition_flag_f0 == 0)) {
+  if (((dtc_U111D_in == 0) || (obc_power_relay_contact != 0)) || (precondition_flag_f0 == 0)) {
     dtc2a_dbnc_in = 0;
   }
   else {
@@ -48761,7 +48764,7 @@ void dtc_monitor_P1A11(void)
   }
   DAT_0080ddd6 = 0x1e;
   debounce_counter((char *)&dtc2a_dbnc_in,&DAT_0080ddd6,&DAT_0080e250,&DAT_0080ddd7,&DAT_0080ffd0);
-  if ((*(char *)((int)piVar2 + 0x60f) == '\0') || (gpio_bit_shift_input == 0)) {
+  if ((*(char *)((int)piVar2 + 0x60f) == '\0') || (obc_power_relay_contact == 0)) {
     uVar1 = 0;
   }
   else {
@@ -48816,13 +48819,13 @@ void dtc_monitor_2b_drive6(void)
   else {
     bVar1 = false;
   }
-  if (((DAT_0080d688 == '\0') || (DAT_0080d682 == '\0')) || (!bVar1)) {
+  if (((DAT_0080d688 == '\0') || (obc_0x389_received == 0)) || (!bVar1)) {
     iVar2 = 0;
   }
   else {
     iVar2 = 1;
   }
-  if (((DAT_0080d688 == '\0') && (DAT_0080d682 != '\0')) && (bVar1)) {
+  if (((DAT_0080d688 == '\0') && (obc_0x389_received != 0)) && (bVar1)) {
     uVar3 = 0;
   }
   else {
@@ -52711,7 +52714,7 @@ void dtc_monitor_P1B0B(void)
   
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
-  if (((DAT_0080d6ad == '\0') || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
+  if (((vehicle_speed_invalid == 0) || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
     dtc_P1B0B_precond = 0;
   }
   else {
@@ -52722,7 +52725,7 @@ void dtc_monitor_P1B0B(void)
   *(undefined1 *)((int)piVar3 + 0x82a) = *(undefined1 *)(psVar4 + 500);
   two_stage_latch(&dtc_U1901_stage,(byte *)((int)piVar3 + 0x82a),(undefined1 *)((int)piVar3 + 0x82b),
                   (undefined1 *)(psVar4 + 0x9b8));
-  *(bool *)(piVar3 + 0x20b) = DAT_0080d6ad == '\0';
+  *(bool *)(piVar3 + 0x20b) = vehicle_speed_invalid == 0;
   *(undefined2 *)((int)piVar3 + 0x382) = 100;
   debounce_counter_up((char *)(piVar3 + 0x20b),(ushort *)((int)piVar3 + 0x382),(undefined1 *)((int)piVar3 + 0x82d),
                       (ushort *)(psVar4 + 0x9be));
@@ -53275,7 +53278,7 @@ void dtc_monitor_P1B24(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((DAT_0080d6ab == '\0') || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
+  if (((rear_left_wheel_invalid == 0) || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
     dtc_P1B24_fault_cond = 0;
   }
   else {
@@ -53284,7 +53287,7 @@ void dtc_monitor_P1B24(void)
   dtc_P1B24_debounce_threshold = 500;
   derate_debounce((char *)&dtc_P1B24_fault_cond,(ushort *)&dtc_P1B24_debounce_threshold,&dtc_P1B24_debounce_state,
                   &DAT_0080dc5e,(ushort *)&DAT_0080f734);
-  *(bool *)((int)piVar2 + 0x7f7) = DAT_0080d6ab == '\0';
+  *(bool *)((int)piVar2 + 0x7f7) = rear_left_wheel_invalid == 0;
   *(undefined2 *)(piVar2 + 0xd7) = 100;
   debounce_counter_up((char *)((int)piVar2 + 0x7f7),(ushort *)(piVar2 + 0xd7),(undefined1 *)(piVar2 + 0x1fe),
                       (ushort *)(&LAB_00001208 + (int)psVar3));
@@ -53335,7 +53338,7 @@ void dtc_monitor_P1B25(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((DAT_0080d6aa == '\0') || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
+  if (((rear_right_wheel_invalid == 0) || (precondition_flag_01 == 0)) || ((DAT_00804a56 & 2) != 0)) {
     dtc_P1B25_raw = 0;
   }
   else {
@@ -53344,7 +53347,7 @@ void dtc_monitor_P1B25(void)
   dtc_P1B25_debounce_thresh = 500;
   derate_debounce((char *)&dtc_P1B25_raw,(ushort *)&dtc_P1B25_debounce_thresh,&dtc_P1B25_debounced,&DAT_0080dc58,
                   (ushort *)&DAT_0080f704);
-  *(bool *)((int)piVar2 + 0x7f1) = DAT_0080d6aa == '\0';
+  *(bool *)((int)piVar2 + 0x7f1) = rear_right_wheel_invalid == 0;
   *(undefined2 *)((int)piVar2 + 0x356) = 100;
   debounce_counter_up((char *)((int)piVar2 + 0x7f1),(ushort *)((int)piVar2 + 0x356),(undefined1 *)((int)piVar2 + 0x7f2),
                       (ushort *)(psVar3 + 0x8ec));
@@ -55274,12 +55277,13 @@ void dtc_monitor_reset_grp4(void)
 }
 
 
-//=== 0x0007ddf4 dtc_monitor_idx54 [NAMED] (calls=4)
+//=== 0x0007ddf4 dtc_monitor_U111D [NAMED] (calls=4)
 
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* fault debounce+latch -> dtc_set_by_index(0x54) [conf: high] */
+/* U111D (OBC CAN timeout): obc_power_relay_cmd on for 500 ticks without the OBC's 0x389 (0x80d682); DTC 0x54. Was
+   dtc_monitor_idx54 [conf: high] */
 
-void dtc_monitor_idx54(void)
+void dtc_monitor_U111D(void)
 
 {
   undefined1 uVar1;
@@ -55289,7 +55293,7 @@ void dtc_monitor_idx54(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  uVar4 = (uint)(DAT_0080d682 == '\0');
+  uVar4 = (uint)(obc_0x389_received == 0);
   DAT_0080dbf2 = 500;
   debounce_counter_up((char *)&dtc_U111D_in,&DAT_0080dbf2,&dtc_U111D_deb,(ushort *)&DAT_0080f340);
   if (((((uVar4 & 0xff) == 0) || (*(char *)((int)piVar2 + 0x76e) == '\0')) || (precondition_flag_13 == 0)) ||
@@ -55303,7 +55307,7 @@ void dtc_monitor_idx54(void)
   *(undefined2 *)(piVar2 + 0xbc) = 300;
   derate_debounce((char *)((int)piVar2 + 0x76f),(ushort *)(piVar2 + 0xbc),(undefined1 *)(piVar2 + 0x1dc),
                   (short *)((int)piVar2 + 0x2f2),(ushort *)(psVar3 + 0x70a));
-  if ((DAT_0080d682 == '\0') && (charging_contactor_fb == 0)) {
+  if ((obc_0x389_received == 0) && (charging_contactor_fb == 0)) {
     uVar1 = 0;
   }
   else {
@@ -57209,7 +57213,7 @@ void torque_map(void)
   else if (fVar15 < 0.0) {
     fVar15 = 0.0;
   }
-  hv_isolation_leakage = DAT_0080b60c;
+  vacuum_sensor_volts = DAT_0080b60c;
   uVar11 = fp_f32_to_u32((uint)fVar15);
   DAT_0080d8ef = (undefined1)uVar11;
   _DAT_0080d114 = fVar3 * 5.0;
@@ -57477,8 +57481,8 @@ void decode_inverter_demand(void)
 void gpio_bit_extract(void)
 
 {
-  gpio_bit_shift_input = (byte)(((uint)shift_input_latch << 0x1d) >> 0x1f);
-  DAT_0080b4fd = gpio_bit_shift_input;
+  obc_power_relay_contact = (byte)(((uint)shift_input_latch << 0x1d) >> 0x1f);
+  DAT_0080b4fd = obc_power_relay_contact;
   DAT_0080d6e5 = (byte)(((uint)gpio_input_latch_18 << 0x1e) >> 0x1f);
   DAT_0080b503 = DAT_0080d6e5;
   DAT_0080d6e6 = (byte)(((uint)gpio_input_latch_18 << 0x1c) >> 0x1f);
@@ -58330,13 +58334,13 @@ void can_rx_aggregator(void)
   undefined1 *puStack_364;
   undefined1 *puStack_360;
   float *pfStack_35c;
-  undefined1 *puStack_358;
+  byte *pbStack_358;
   undefined1 *puStack_354;
   undefined1 *puStack_350;
-  undefined4 *puStack_34c;
-  undefined1 *puStack_348;
-  undefined4 *puStack_344;
-  undefined1 *puStack_340;
+  float *pfStack_34c;
+  byte *pbStack_348;
+  float *pfStack_344;
+  byte *pbStack_340;
   undefined1 *puStack_33c;
   undefined1 *puStack_338;
   undefined4 *puStack_334;
@@ -58407,7 +58411,7 @@ void can_rx_aggregator(void)
   undefined1 *puStack_230;
   undefined4 *puStack_22c;
   undefined4 *puStack_228;
-  undefined1 *puStack_224;
+  byte *pbStack_224;
   float *pfStack_220;
   undefined1 *puStack_21c;
   float *pfStack_218;
@@ -58685,7 +58689,7 @@ void can_rx_aggregator(void)
   puStack_1a4 = &DAT_0080d46f;
   can_flag_report_build_c168(&puStack_1f4);
   uVar8 = (uint)DAT_0080d681;
-  puStack_224 = &DAT_0080d682;
+  pbStack_224 = &obc_0x389_received;
   pfStack_220 = &power_derate_num_a;
   puStack_21c = &DAT_0080d683;
   pfStack_218 = &power_derate_num_b;
@@ -58697,8 +58701,8 @@ void can_rx_aggregator(void)
   puStack_200 = &DAT_0080d688;
   puStack_1fc = &DAT_0080d689;
   puStack_1f8 = &DAT_0080d68a;
-  decode_meter_telltale_frame(&puStack_224);
-  uVar9 = (uint)DAT_0080d682;
+  decode_meter_telltale_frame(&pbStack_224);
+  uVar9 = (uint)obc_0x389_received;
   pbStack_10 = &drive_mode_valid;
   pbStack_c = &drive_mode_code;
   decode_can_flag_a(&pbStack_10);
@@ -58781,20 +58785,20 @@ void can_rx_aggregator(void)
   puStack_330 = &DAT_0080d6a7;
   puStack_32c = &DAT_0080d04c;
   puStack_328 = &DAT_0080d6a8;
-  decode_can_pedal_pair(&puStack_33c);
+  decode_front_wheel_speeds(&puStack_33c);
   uVar15 = (uint)DAT_0080d6a5;
   puStack_350 = &DAT_0080d6a9;
-  puStack_34c = &DAT_0080d050;
-  puStack_348 = &DAT_0080d6aa;
-  puStack_344 = &DAT_0080d054;
-  puStack_340 = &DAT_0080d6ab;
-  decode_can_analog_pair(&puStack_350);
+  pfStack_34c = &rear_right_wheel_rpm;
+  pbStack_348 = &rear_right_wheel_invalid;
+  pfStack_344 = &rear_left_wheel_rpm;
+  pbStack_340 = &rear_left_wheel_invalid;
+  decode_rear_wheel_speeds(&puStack_350);
   uVar16 = (uint)DAT_0080d6a9;
   puStack_360 = &DAT_0080d6ac;
-  pfStack_35c = &derate_ref_d058;
-  puStack_358 = &DAT_0080d6ad;
+  pfStack_35c = &vehicle_speed_kmh;
+  pbStack_358 = &vehicle_speed_invalid;
   puStack_354 = &DAT_0080d6ae;
-  decode_can_temp_a(&puStack_360);
+  decode_vehicle_speed(&puStack_360);
   uVar17 = (uint)DAT_0080d6ac;
   puStack_18 = &DAT_0080d6af;
   puStack_14 = &DAT_0080d6b0;
@@ -58963,7 +58967,7 @@ void can_rx_aggregator(void)
        (ushort)DAT_0080d663 * 0x80 + (ushort)DAT_0080d664 * 0x100 + (ushort)DAT_0080d665 * 0x200 +
        (ushort)DAT_0080d666 * 0x400 + DAT_0080a8f2 + DAT_0080a8f4 + DAT_0080a8f6 + DAT_0080a8f8 + DAT_0080a8fa;
   bms_relay_status_shadow = DAT_0080d6a6;
-  fVar21 = (derate_ref_d058 + 0.0039062498) * 128.0;
+  fVar21 = (vehicle_speed_kmh + 0.0039062498) * 128.0;
   if (65535.0 < fVar21) {
     fVar20 = 65535.0;
   }
@@ -58999,7 +59003,7 @@ void can_rx_aggregator(void)
   }
   uVar1 = fp_f32_to_u32((uint)fVar20);
   _DAT_0080d39a = (undefined2)uVar1;
-  fVar21 = (DAT_0080d050 + 0.24999999) * 2.0;
+  fVar21 = (rear_right_wheel_rpm + 0.24999999) * 2.0;
   if (65535.0 < fVar21) {
     fVar20 = 65535.0;
   }
@@ -59011,7 +59015,7 @@ void can_rx_aggregator(void)
   }
   uVar1 = fp_f32_to_u32((uint)fVar20);
   _DAT_0080d39c = (undefined2)uVar1;
-  fVar21 = (DAT_0080d054 + 0.24999999) * 2.0;
+  fVar21 = (rear_left_wheel_rpm + 0.24999999) * 2.0;
   if (65535.0 < fVar21) {
     fVar20 = 65535.0;
   }
@@ -59027,8 +59031,8 @@ void can_rx_aggregator(void)
        DAT_0080d6a6 * '\x02' + DAT_0080d6b0 + DAT_0080d6ae * '\x04' + DAT_0080aaa3 + DAT_0080aaa4 + DAT_0080aaa5 +
        DAT_0080aaa6 + DAT_0080aaa7;
   can_status_pack_495 =
-       DAT_0080d6a7 * '\x02' + DAT_0080d6ad + DAT_0080d6a8 * '\x04' + DAT_0080d6aa * '\b' + DAT_0080d6ab * '\x10' +
-       DAT_0080aaab + DAT_0080aaac + DAT_0080aaad;
+       DAT_0080d6a7 * '\x02' + vehicle_speed_invalid + DAT_0080d6a8 * '\x04' + rear_right_wheel_invalid * '\b' +
+       rear_left_wheel_invalid * '\x10' + DAT_0080aaab + DAT_0080aaac + DAT_0080aaad;
   DAT_0080d496 = (drive_mode_code == 3) + DAT_0080aab5 + DAT_0080aab6 + DAT_0080aab7 + DAT_0080aab8 + DAT_0080aab9 +
                  DAT_0080aaba + DAT_0080aabb;
   DAT_0080d497 = (drive_mode_code == 1) + DAT_0080aac3 + DAT_0080aac4 + DAT_0080aac5 + DAT_0080aac6 + DAT_0080aac7 +
@@ -61276,7 +61280,7 @@ LAB_00087dfc:
                         }
                         else if ((gear_code == 1) &&
                                 ((((DAT_0080df14 == '\0' && (gear_pos2_enable != 0)) && (drive_ready_cond_a != 0)) &&
-                                 ((shift_reverse_enable != 0 && (drive_state_ready == 0)))))) {
+                                 ((obc_wake_latched != 0 && (drive_state_ready == 0)))))) {
                           why_not_ready_code = 0xb;
                         }
                         else {
@@ -61855,15 +61859,15 @@ void mode_request_arbiter(void)
     return;
   }
   if (DAT_0080e403 == '\0') {
-    if ((((drive_inhibit_latched == 0) || (dtc_d826_flag != 0)) || (shift_reverse_enable != 0)) ||
+    if ((((drive_inhibit_latched == 0) || (dtc_d826_flag != 0)) || (obc_wake_latched != 0)) ||
        ((drive_state_ready != 0 || (fault_aggregate_b != 0)))) {
-      if ((((DAT_0080d5d4 == '\0') && ((dtc_d826_flag == 0 && (shift_reverse_enable == 0)))) && (drive_state_ready == 0)
-          ) && (fault_aggregate_b == 0)) {
+      if ((((DAT_0080d5d4 == '\0') && ((dtc_d826_flag == 0 && (obc_wake_latched == 0)))) && (drive_state_ready == 0)) &&
+         (fault_aggregate_b == 0)) {
         why_not_ready_code = 3;
       }
       else {
-        if ((((dtc_d826_flag != 0) || (shift_reverse_enable != 0)) || (drive_state_ready != 0)) ||
-           (fault_aggregate_b != 0)) {
+        if ((((dtc_d826_flag != 0) || (obc_wake_latched != 0)) || (drive_state_ready != 0)) || (fault_aggregate_b != 0))
+        {
           if (drive_inhibit_latched != 0) {
             why_not_ready_code = 5;
             return;
@@ -61876,7 +61880,7 @@ void mode_request_arbiter(void)
             why_not_ready_code = 7;
             return;
           }
-          if (((gear_pos2_enable != 0) && (shift_reverse_enable != 0)) && (drive_state_ready != 0)) {
+          if (((gear_pos2_enable != 0) && (obc_wake_latched != 0)) && (drive_state_ready != 0)) {
             why_not_ready_code = 8;
             return;
           }
@@ -61884,7 +61888,7 @@ void mode_request_arbiter(void)
             why_not_ready_code = 9;
             return;
           }
-          if (((gear_code != 1) && (gear_pos2_enable != 0)) && (shift_reverse_enable != 0)) {
+          if (((gear_code != 1) && (gear_pos2_enable != 0)) && (obc_wake_latched != 0)) {
             why_not_ready_code = 10;
             return;
           }
@@ -61897,7 +61901,7 @@ void mode_request_arbiter(void)
             why_not_ready_code = 0xc;
           }
           else if (((gear_code == 1) && ((DAT_0080df14 == '\0' && (gear_pos2_enable != 0)))) &&
-                  ((drive_ready_cond_a != 0 && ((shift_reverse_enable != 0 && (fault_aggregate_b == 0)))))) {
+                  ((drive_ready_cond_a != 0 && ((obc_wake_latched != 0 && (fault_aggregate_b == 0)))))) {
             why_not_ready_code = 0xd;
           }
           else {
@@ -62504,17 +62508,16 @@ void drive_ready_permit_latch(void)
 
 {
   if ((((operating_mode == 6) && (mode_substate_code != 3)) && (demand_permit_flag == 0)) &&
-     (((drive_ready_cond_a != 0 && (shift_reverse_enable != 0)) &&
-      ((drive_inhibit_b == 0 && (drive_inhibit_latched == 0)))))) {
+     (((drive_ready_cond_a != 0 && (obc_wake_latched != 0)) && ((drive_inhibit_b == 0 && (drive_inhibit_latched == 0))))
+     )) {
     drive_permit_cond_set = 1;
   }
   else {
     drive_permit_cond_set = 0;
   }
   if ((((operating_mode == 6) && (mode_substate_code != 3)) &&
-      ((demand_permit_flag == 0 &&
-       (((drive_ready_cond_a != 0 && (shift_reverse_enable != 0)) && (drive_inhibit_b == 0)))))) &&
-     (drive_inhibit_latched == 0)) {
+      ((demand_permit_flag == 0 && (((drive_ready_cond_a != 0 && (obc_wake_latched != 0)) && (drive_inhibit_b == 0))))))
+     && (drive_inhibit_latched == 0)) {
     drive_permit_cond_clear = 0;
   }
   else {
@@ -62910,12 +62913,12 @@ void FUN_00089c50(void)
 }
 
 
-//=== 0x00089c70 detector_d827 [NAMED] (calls=3)
+//=== 0x00089c70 obc_wake_latch [NAMED] (calls=3)
 
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* FUN_000b5144/523c + two_stage_latch -> d827 [conf: med] */
+/* P6.5 OBC wake (0x80d5e9) -> obc_wake_latched. Was detector_d827 [conf: high] */
 
-void detector_d827(void)
+void obc_wake_latch(void)
 
 {
   DAT_0080de1d = 5;
@@ -62928,7 +62931,7 @@ void detector_d827(void)
   }
   _DAT_0080dd28 = 300;
   debounce_counter_up((char *)&detector_d827_raw2,(ushort *)&DAT_0080dd28,&DAT_0080e3d5,(ushort *)&DAT_00810a94);
-  two_stage_latch(&detector_d827_raw,&DAT_0080e3d5,&shift_reverse_enable,&DAT_00810aa0);
+  two_stage_latch(&detector_d827_raw,&DAT_0080e3d5,&obc_wake_latched,&DAT_00810aa0);
   return;
 }
 
@@ -63425,7 +63428,7 @@ void dtc_pack_status_bits_d1c8(void)
   DAT_0080b4a3 = telltale_d85f;
   DAT_0080b4ab = telltale_d852;
   DAT_0080b4a0 = telltale_d858;
-  DAT_0080b4a2 = telltale_d857;
+  DAT_0080b4a2 = obc_power_relay_cmd;
   DAT_0080b49f = telltale_d860;
   DAT_0080b49e = telltale_d85e;
   DAT_0080b4a1 = telltale_d859;
@@ -63437,7 +63440,7 @@ void dtc_pack_status_bits_d1c8(void)
   DAT_0080b4a9 = telltale_d854;
   DAT_0080b4a4 = telltale_d855;
   ae1f_mode_bits =
-       ae1f_mode_bits & 3 | (telltale_d858 & 1) << 5 | (byte)(((uint)telltale_d857 << 0x1f) >> 0x1c) |
+       ae1f_mode_bits & 3 | (telltale_d858 & 1) << 5 | (byte)(((uint)obc_power_relay_cmd << 0x1f) >> 0x1c) |
        (byte)(((uint)telltale_d859 << 0x1f) >> 0x1b) | (byte)(((uint)telltale_d85a << 0x1f) >> 0x1d) |
        (byte)(((uint)telltale_d855 << 0x1f) >> 0x18) | (byte)(((uint)telltale_d856 << 0x1f) >> 0x19);
   DAT_0080b4a5 = telltale_d856;
@@ -63458,7 +63461,7 @@ void dtc_pack_status_bits_d1c8(void)
        (uint)telltale_d85f + (uint)telltale_d859 * 2 + (uint)telltale_d85b * 4 + (uint)*pbVar2 * 8 +
        (uint)*pbVar1 * 0x10 + (uint)telltale_d854 * 0x20 + (uint)telltale_d855 * 0x40 + (uint)telltale_d856 * 0x80 +
        (uint)telltale_d85a * 0x100 + (uint)telltale_d853 * 0x200 + (uint)telltale_d852 * 0x400 + DAT_0080a4c4 +
-       (uint)telltale_d858 * 0x1000 + (uint)telltale_d857 * 0x2000 + DAT_0080a4c8 + (uint)telltale_d860 * 0x8000 +
+       (uint)telltale_d858 * 0x1000 + (uint)obc_power_relay_cmd * 0x2000 + DAT_0080a4c8 + (uint)telltale_d860 * 0x8000 +
        (uint)telltale_d85e * 0x10000 + DAT_0080a4cc + DAT_0080a4d4 + DAT_0080a4d8 + DAT_0080a4dc + DAT_0080a4e0 +
        DAT_0080a4e4 + DAT_0080a4e8 + DAT_0080a4ec + DAT_0080a4f0 + DAT_0080a4d0 + (uint)DAT_0080df59 * 0x8000000 +
        (uint)DAT_0080df5a * 0x10000000 + (uint)DAT_0080df5b * 0x20000000 + (uint)condenser_low_flag * 0x40000000 +
@@ -64266,7 +64269,7 @@ void meter_fp_compute_d436(void)
   cVar6 = *(char *)(piVar7 + 0x1b8);
   *(bool *)((int)piVar7 + 0x6e1) = *(char *)((int)piVar7 + 0x6df) == '\0';
   two_stage_latch(pbVar9,(byte *)((int)piVar7 + 0x6e1),(undefined1 *)((int)piVar7 + 0x6e2),&DAT_0080f010);
-  bVar1 = 75.3 < charge_voltage_cf64;
+  bVar1 = 75.3 < vacuum_pressure;
   if ((*(char *)((int)piVar7 + 0x6e2) == '\0') || (!bVar1)) {
     cVar4 = '\0';
   }
@@ -64307,7 +64310,7 @@ void precharge_permit_eval_08b618(void)
 void monitor_condenser_low_dfe1(void)
 
 {
-  if ((75.3 < charge_voltage_cf64) || (bms_fault_aggregate_80df5d != 0)) {
+  if ((75.3 < vacuum_pressure) || (bms_fault_aggregate_80df5d != 0)) {
     condenser_low_flag = 1;
   }
   else {
@@ -64494,8 +64497,8 @@ LAB_0008b914:
           return 1.4013e-45;
         }
         if (charge_sub_a == 1) {
-          if (charge_voltage_cf64 <= battery_sig_d9a8) {
-            return charge_voltage_cf64 - battery_sig_d9a8;
+          if (vacuum_pressure <= vacuum_pump_on_pressure) {
+            return vacuum_pressure - vacuum_pump_on_pressure;
           }
           precharge_dd68_mode = 0x15;
           vp_main_relay = 1;
@@ -64524,8 +64527,8 @@ LAB_0008b914:
           return 1.4013e-45;
         }
         if (charge_step_a == 1) {
-          if (battery_sig_d9a4 <= charge_voltage_cf64) {
-            return charge_voltage_cf64 - battery_sig_d9a4;
+          if (vacuum_pump_off_pressure <= vacuum_pressure) {
+            return vacuum_pressure - vacuum_pump_off_pressure;
           }
           charge_dwell_counter = 0.0;
           charge_hold_flag = 1;
@@ -64559,8 +64562,8 @@ LAB_0008bb30:
       }
       if (precharge_abort != 0) {
         if (charge_sub_c == 1) {
-          if (charge_voltage_cf64 <= battery_sig_d9a8) {
-            return charge_voltage_cf64 - battery_sig_d9a8;
+          if (vacuum_pressure <= vacuum_pump_on_pressure) {
+            return vacuum_pressure - vacuum_pump_on_pressure;
           }
           precharge_dd68_mode = 0x1d;
           vp_main_relay = 1;
@@ -64574,8 +64577,8 @@ LAB_0008bb30:
         if (charge_sub_c == 2) {
           if (charge_hold_flag != 0) {
             if (charge_step_b == 1) {
-              if (battery_sig_d9a4 <= charge_voltage_cf64) {
-                return charge_voltage_cf64 - battery_sig_d9a4;
+              if (vacuum_pump_off_pressure <= vacuum_pressure) {
+                return vacuum_pressure - vacuum_pump_off_pressure;
               }
               charge_dwell_counter = 0.0;
               charge_hold_flag = 1;
@@ -65149,8 +65152,8 @@ void build_battery_status_frame_08cd10(void)
   byte bVar3;
   byte bVar4;
   
-  battery_sig_d9a4 = 21.300001;
-  battery_sig_d9a8 = 41.3;
+  vacuum_pump_off_pressure = 21.300001;
+  vacuum_pump_on_pressure = 41.3;
   DAT_0080dd67 = 0x14;
   can_tx_batt_status = 0x14;
   _DAT_0080dbbc = 0x14;
@@ -65833,7 +65836,8 @@ void reset_filter_states_8da38(void)
 
 //=== 0x0008da58 dtc_monitor_C2016 [NAMED] (calls=3)
 
-/* temp derate latch, dtc_set_by_index 0xcc [conf: high] */
+/* C2016 (VP control relay 1 stuck on): vacuum_pump_motor_volts >= 5 with both control relays off; DTC 0xcc [conf: high]
+    */
 
 void dtc_monitor_C2016(void)
 
@@ -65844,8 +65848,8 @@ void dtc_monitor_C2016(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((DAT_0080df55 != '\0') || (DAT_0080df56 != '\0')) || (charge_voltage_cf70 < 5.0)) || (hv_transfer_permit == 0))
-  {
+  if ((((DAT_0080df55 != '\0') || (DAT_0080df56 != '\0')) || (vacuum_pump_motor_volts < 5.0)) ||
+     (hv_transfer_permit == 0)) {
     dtc_C2016_in = 0;
   }
   else {
@@ -65895,7 +65899,7 @@ void dtc_monitor_C202D_overtemp(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((DAT_0080df55 == '\0') || (DAT_0080df56 == '\0')) || (8.0 <= charge_voltage_cf70)) ||
+  if ((((DAT_0080df55 == '\0') || (DAT_0080df56 == '\0')) || (8.0 <= vacuum_pump_motor_volts)) ||
      ((DAT_0080df67 == '\0' || (DAT_0080df54 == '\0')))) {
     DAT_0080dfa3 = 0;
   }
@@ -65963,7 +65967,7 @@ void dtc_monitor_c6_precharge(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((((DAT_0080df55 == '\0') || (DAT_0080df56 != '\0')) || (8.0 <= charge_voltage_cf70)) ||
+  if (((((DAT_0080df55 == '\0') || (DAT_0080df56 != '\0')) || (8.0 <= vacuum_pump_motor_volts)) ||
       ((DAT_0080df67 == '\0' || (precharge_mode_snapshot != 3)))) || (DAT_0080df54 == '\0')) {
     DAT_0080df9f = 0;
   }
@@ -66031,7 +66035,7 @@ void dtc_monitor_charge_d5xx(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if (((((DAT_0080df55 != '\0') || (DAT_0080df56 == '\0')) || (8.0 <= charge_voltage_cf70)) ||
+  if (((((DAT_0080df55 != '\0') || (DAT_0080df56 == '\0')) || (8.0 <= vacuum_pump_motor_volts)) ||
       ((DAT_0080df67 == '\0' || (precharge_mode_snapshot != 5)))) || (DAT_0080df54 == '\0')) {
     DAT_0080df9b = 0;
   }
@@ -66076,7 +66080,8 @@ void charge_dtc_state_reset_b(void)
 
 //=== 0x0008df18 dtc_monitor_C201A [NAMED] (calls=3)
 
-/* two_stage_latch + dtc_set_by_index(0xcf) fault detector [conf: high] */
+/* C201A (VP motor stuck): vacuum_pump_motor_volts <= 3 at once when the pump is switched off (no back-EMF); DTC 0xcf
+   [conf: high] */
 
 void dtc_monitor_C201A(void)
 
@@ -66113,7 +66118,7 @@ void dtc_monitor_C201A(void)
   else {
     cVar2 = '\x01';
   }
-  if ((((*(char *)((int)piVar3 + 0x691) == '\0') || (cVar2 == '\0')) || (3.0 < charge_voltage_cf70)) ||
+  if ((((*(char *)((int)piVar3 + 0x691) == '\0') || (cVar2 == '\0')) || (3.0 < vacuum_pump_motor_volts)) ||
      ((3.0 < dtc_cf_temp_prev || (*(char *)((int)piVar3 + 0x663) == '\0')))) {
     uVar1 = 0;
   }
@@ -66137,7 +66142,7 @@ void dtc_monitor_C201A(void)
                  DAT_0080aa83 + DAT_0080aa84 + DAT_0080aa85 + DAT_0080aa86 + DAT_0080aa87;
   dtc_cf_prev_a = *(byte *)((int)piVar3 + 0x68e);
   dtc_cf_prev_b = *(byte *)((int)piVar3 + 0x693);
-  dtc_cf_temp_prev = charge_voltage_cf70;
+  dtc_cf_temp_prev = vacuum_pump_motor_volts;
   dtc_cf_prev_c = hv_charge_precond_p91;
   return;
 }
@@ -66230,7 +66235,7 @@ void dtc_monitor_C2021(void)
   
   psVar4 = &monitor_state_base2;
   piVar3 = &monitor_state_base;
-  if ((hv_isolation_leakage < 0.1) || (4.5 < hv_isolation_leakage)) {
+  if ((vacuum_sensor_volts < 0.1) || (4.5 < vacuum_sensor_volts)) {
     uVar2 = 1;
   }
   else {
@@ -66295,13 +66300,14 @@ void charge_dtc_state_reset_a(void)
 }
 
 
-//=== 0x0008e438 dtc_monitor_hv_isolation [NAMED] (calls=3)
+//=== 0x0008e438 dtc_monitor_C2022 [NAMED] (calls=3)
 
 /* WARNING: Removing unreachable block (mem,0x0008ebf4) */
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-/* HV/current debounce; DTC 0xd2; d234/d432 status [conf: med] */
+/* C2022 (vacuum sensor value stuck): vacuum_sensor_volts moves < 0.1 over 500 ticks of pumping, or < 0.2 across pump
+   relay switching; DTC 0xd2. Was dtc_monitor_hv_isolation [conf: high] */
 
-void dtc_monitor_hv_isolation(void)
+void dtc_monitor_C2022(void)
 
 {
   bool bVar1;
@@ -66392,16 +66398,16 @@ void dtc_monitor_hv_isolation(void)
     local_7 = 0;
   }
   if ((local_6 != 0) && (DAT_00810fa0 == 0)) {
-    DAT_0080d9a0 = hv_isolation_leakage;
+    DAT_0080d9a0 = vacuum_sensor_volts;
     if (local_7 != 0) {
       DAT_0080e708 = DAT_0080e70c;
       DAT_0080e704 = DAT_0080e710;
     }
-    DAT_0080e710 = hv_isolation_leakage;
+    DAT_0080e710 = vacuum_sensor_volts;
     DAT_0080e70c = DAT_0080e704;
   }
   DAT_00810fa0 = (uint)(local_6 != 0);
-  fVar4 = DAT_0080d9a0 - hv_isolation_leakage;
+  fVar4 = DAT_0080d9a0 - vacuum_sensor_volts;
   fStack_14 = fVar4;
   if (fVar4 < 0.0) {
     fStack_14 = -fVar4;
@@ -66452,7 +66458,7 @@ LAB_0008e74c:
     }
   }
   if ((local_20 == 0) && (local_6 != 0)) {
-    fStack_24 = hv_isolation_leakage;
+    fStack_24 = vacuum_sensor_volts;
   }
   else {
     fStack_24 = DAT_0080e664;
@@ -66463,7 +66469,7 @@ LAB_0008e74c:
   else {
     local_26 = 1;
     if (DAT_00810f9c == 0) {
-      fVar7 = fStack_24 - hv_isolation_leakage;
+      fVar7 = fStack_24 - vacuum_sensor_volts;
       if (fVar7 < 0.0) {
         fVar7 = -fVar7;
       }
@@ -66478,10 +66484,10 @@ LAB_0008e74c:
     bVar2 = false;
   }
   if ((bVar2) && (DAT_00810f98 == 0)) {
-    DAT_0080d99c = hv_isolation_leakage;
+    DAT_0080d99c = vacuum_sensor_volts;
   }
   DAT_00810f98 = (uint)bVar2;
-  fVar7 = DAT_0080d99c - hv_isolation_leakage;
+  fVar7 = DAT_0080d99c - vacuum_sensor_volts;
   if (fVar7 < 0.0) {
     fVar7 = -fVar7;
   }
@@ -66728,9 +66734,9 @@ void power_contactor_energy_calc(void)
   }
   fVar5 = charge_stage1_ref_v;
   if (charge_stage1_init == 0) {
-    fVar5 = charge_voltage_cf64;
+    fVar5 = vacuum_pressure;
   }
-  if ((charge_voltage_cf64 <= 21.300001) || (21.300001 < fVar5)) {
+  if ((vacuum_pressure <= 21.300001) || (21.300001 < fVar5)) {
     charge_stage1_active = 0;
   }
   else {
@@ -66744,9 +66750,9 @@ void power_contactor_energy_calc(void)
   }
   fVar5 = charge_stage2_ref_v;
   if (charge_stage2_init == 0) {
-    fVar5 = charge_voltage_cf64;
+    fVar5 = vacuum_pressure;
   }
-  if ((charge_voltage_cf64 <= 41.3) || (41.3 < fVar5)) {
+  if ((vacuum_pressure <= 41.3) || (41.3 < fVar5)) {
     charge_stage2_active = 0;
   }
   else {
@@ -67021,9 +67027,9 @@ void power_contactor_energy_calc(void)
   charge_prev_stage1 = charge_stage1_active;
   charge_prev_latched = charge_stage_latched;
   charge_stage1_init = 1;
-  charge_stage1_ref_v = charge_voltage_cf64;
+  charge_stage1_ref_v = vacuum_pressure;
   charge_stage2_init = 1;
-  charge_stage2_ref_v = charge_voltage_cf64;
+  charge_stage2_ref_v = vacuum_pressure;
   DAT_0080e8e8 = charge_stage_latched;
   charge_count_prev1 = uStack_c;
   DAT_0080e8e9 = charge_stage3_latched;
@@ -67062,7 +67068,7 @@ void dtc_monitor_C202C(void)
   
   psVar3 = &monitor_state_base2;
   piVar2 = &monitor_state_base;
-  if ((((0.3 <= charge_voltage_cf54) || (charge_voltage_cf64 < 75.3)) || (hv_transfer_permit == 0)) ||
+  if ((((0.3 <= charge_voltage_cf54) || (vacuum_pressure < 75.3)) || (hv_transfer_permit == 0)) ||
      ((precharge_mode_snapshot < 0xb || (DAT_0080df58 == '\0')))) {
     dtc_C202C_precond = 0;
   }
@@ -67119,7 +67125,7 @@ void dtc_monitor_C202D(void)
 {
   float fVar1;
   
-  fVar1 = charge_voltage_cf64 - dtc_d6_temp_prev;
+  fVar1 = vacuum_pressure - dtc_d6_temp_prev;
   dtc_d6_raw = 0;
   _DAT_0080db86 = 10;
   debounce_counter_up((char *)&dtc_d6_raw,(ushort *)&DAT_0080db86,&DAT_0080df6d,(ushort *)&DAT_0080ed40);
@@ -67132,7 +67138,7 @@ void dtc_monitor_C202D(void)
   two_stage_latch(&DAT_0080df6d,&DAT_0080df6e,&dtc_d6_latched,&DAT_0080ed4c);
   dtc_set_by_index(0xd6,dtc_d6_latched);
   _DAT_0080cfc4 = fVar1 + 0.0;
-  dtc_d6_temp_prev = charge_voltage_cf64;
+  dtc_d6_temp_prev = vacuum_pressure;
   dtc_d6_delta_prev = fVar1;
   dtc_d6_prev_flag = hv_charge_precond_p91;
   return;
@@ -67284,8 +67290,8 @@ void dtc_state_reset_ed10(void)
 void dtc_monitor_ed10(void)
 
 {
-  DAT_0080df62 = 8.0 < charge_voltage_cf70;
-  DAT_0080df63 = charge_voltage_cf70 <= 5.0;
+  DAT_0080df62 = 8.0 < vacuum_pump_motor_volts;
+  DAT_0080df63 = vacuum_pump_motor_volts <= 5.0;
   two_stage_latch(&DAT_0080df62,&DAT_0080df63,&DAT_0080df64,&DAT_0080ed10);
   return;
 }
@@ -67303,7 +67309,7 @@ void dtc_group_or_aggregate(void)
 {
   bool bVar1;
   
-  if ((DAT_0080dfcf == '\0') || (charge_voltage_cf64 <= 41.3)) {
+  if ((DAT_0080dfcf == '\0') || (vacuum_pressure <= 41.3)) {
     df60_source = 0;
     bVar1 = false;
   }
@@ -67471,7 +67477,7 @@ void diag_status_aggregate_b(void)
   dtc_monitor_0xD0_condenser();
   dtc_monitor_C2021();
   dtc_monitor_ed10();
-  dtc_monitor_hv_isolation();
+  dtc_monitor_C2022();
   p1b1c_chg_detector();
   power_contactor_energy_calc();
   dtc_monitor_C202C();
