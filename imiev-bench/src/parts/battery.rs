@@ -10,6 +10,7 @@ const CMU_RX_SLOT: u32 = 30; // BMU pack-bus mailbox the CMU poll reprograms
 const CELL_V_OFFSET_MV: i32 = 2100; // report raw = (cell mV - 2100) / 5 <=> (V-2.1)*200
 const CELL_V_STEP_MV: i32 = 5;
 const TEMP_C_BIAS: i16 = 50; // report byte = tempC + 50
+const TEMP_BYTES: [&[usize]; 4] = [&[2, 3], &[1, 2], &[1, 2], &[]];
 
 pub struct Cmu {
     pub cell_mv: u16,
@@ -34,8 +35,11 @@ impl Cmu {
         let sid = 0x600 | ((board + 1) << 4) | (i as u16 + 1);
         let raw = ((self.cell_mv as i32 - CELL_V_OFFSET_MV) / CELL_V_STEP_MV).clamp(0, 0xffff) as u16;
         let [vh, vl] = raw.to_be_bytes();
-        let temp = (self.temp_c as i16 + TEMP_C_BIAS) as u8;
-        (sid, [0, 0, temp, 0, vh, vl, vh, vl])
+        let mut data = [0, 0, 0, 0, vh, vl, vh, vl];
+        for &b in TEMP_BYTES[i] {
+            data[b] = (self.temp_c as i16 + TEMP_C_BIAS) as u8;
+        }
+        (sid, data)
     }
 }
 
