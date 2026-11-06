@@ -2,6 +2,7 @@
 
 mod airbag;
 mod battery;
+mod charger;
 mod driver;
 mod eeprom;
 mod hv;
@@ -10,6 +11,7 @@ mod inverter;
 mod vacuum;
 
 pub use battery::Cmu;
+pub use charger::Charger;
 pub use driver::{DriverControls, Gear};
 pub use eeprom::Eeprom;
 pub use hv::{dclink_connected, AcRelay, Condenser, Contactor};

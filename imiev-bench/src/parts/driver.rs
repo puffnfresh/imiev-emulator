@@ -11,8 +11,6 @@ const SHIFT_SUB_PORT: u32 = 0x0080_0702; // P2DATA - shift switch matrix (sub ch
 const SHIFT_MATRIX_MASK: u8 = 0x3f; // six position switches, active-low
 const IGNITION_PORT: u32 = 0x0080_0709; // P9DATA
 const IGNITION_ON_BITS: u8 = 0x60; // IG1 + ST (start) asserted
-const RELAY_SENSE_PORT: u32 = 0x0080_0700; // P0DATA
-const RELAY_SENSE_BIT: u8 = 0x40; // P0.6 = EV-control-relay-commanded-on sense
 const APS_TEST_PORT: u32 = 0x0080_0701; // P1DATA
 const APS_TEST_BIT: u8 = 0x01; // P1.0 output: a self-test pulse for accelerator sensor 2
 
@@ -74,7 +72,6 @@ impl Part for DriverControls {
         chip.set_gpio_input(SHIFT_SUB_PORT, SHIFT_MATRIX_MASK, m);
         let key = |bits| if self.key_on { bits } else { 0 };
         chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
-        chip.set_gpio_input(RELAY_SENSE_PORT, RELAY_SENSE_BIT, key(RELAY_SENSE_BIT));
         // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.
         let main = pedal_raw(self.pedal_pct, APS_RELEASED_RAW, APS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_1_SIGNAL, main);
