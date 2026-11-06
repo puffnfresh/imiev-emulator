@@ -17,7 +17,7 @@
 </head>
 <body>
   <p id="status" class="mono">loading…</p>
-  <fieldset>
+  <fieldset id="gear-box" disabled="">
     <legend>Gear</legend> <label><input type="radio" name="gear" value="0" checked> Park</label> <label><input type="radio" name="gear" value="1">
     Reverse</label> <label><input type="radio" name="gear" value="2"> Neutral</label> <label><input type="radio" name="gear" value="3"> Drive</label>
     <label><input type="radio" name="gear" value="4"> Eco</label> <label><input type="radio" name="gear" value="5"> Comfort</label>
@@ -88,6 +88,7 @@
 
   const OP_MODES = { 0: 'REST', 2: 'PRECHARGE', 3: 'READY', 4: 'DRIVE', 5: 'SHUTDOWN' };
   const STEP_CHUNK = 1_000_000;
+  const OP_MODE_DRIVE = 4;
 
   const $ = (id) => document.getElementById(id);
 
@@ -128,6 +129,7 @@
     const mode = sim.ecu_op_mode();
     $('status').textContent = `running — ${steps.toLocaleString()} steps`;
     $('op-mode').textContent = `${OP_MODES[mode] ?? '?'} (${mode})`;
+    $('gear-box').disabled = mode !== OP_MODE_DRIVE;
     $('mode-code').textContent = sim.ecu_mode_code();
     $('torque').textContent = sim.ecu_torque_request();
     $('f285').textContent = hex(sim.bus_last(0x285));
