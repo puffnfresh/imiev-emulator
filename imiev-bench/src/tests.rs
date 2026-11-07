@@ -272,6 +272,8 @@ fn imiev_idles_in_ready_without_dtcs() {
         ("P1AB5", "CMU01 reports a temperature below -30 C (an unfed sensor reads -50)"),
         ("P1A8E", "CMU01's balancing status (b1 of its first response) is not 0"),
         ("P1AC3", "the battery cooling fan's feedback is high while it is at rest"),
+        ("P1A44", "the leak detector's alarm (P9.4) is standing"),
+        ("P1A46", "the leak detector's alarm ignores the BMU's self-test (P9.1)"),
     ] {
         assert_eq!(bmu_dtc(&sim, dtc) & CONFIRMED, 0, "{dtc} confirmed: {why}");
     }

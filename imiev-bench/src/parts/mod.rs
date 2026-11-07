@@ -9,6 +9,7 @@ mod hv;
 mod ic2;
 mod inverter;
 mod lamps;
+mod leak;
 mod vacuum;
 
 pub use battery::Cmu;
@@ -19,5 +20,6 @@ pub use hv::{dclink_connected, AcRelay, Condenser, Contactor};
 pub use ic2::Ic2Companion;
 pub use inverter::{Inverter, Vehicle, VEHICLE_DT};
 pub use lamps::BacklampRelay;
+pub use leak::LeakDetector;
 pub use vacuum::VacuumPump;
 pub use airbag::AirbagEcu;

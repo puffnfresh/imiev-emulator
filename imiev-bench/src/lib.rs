@@ -149,6 +149,7 @@ impl Simulation {
         let bmu = Node::new("BMU", BMU_FW)
             .with_adc_env(BMU_BOOT_ADC)
             .with_part(Box::new(Cmu::default()))
+            .with_part(Box::new(LeakDetector))
             .with_local_part(Box::new(Eeprom::default()));
         let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
             .with_adc_env(EV_ECU_BOOT_ADC)
