@@ -2,14 +2,13 @@
 
 use mh8106f::System;
 
+#[derive(Debug, Clone, Copy)]
 pub struct DtcTable {
     pub base: u32,
     pub count: u32,
     pub table: u32,
 }
 
-pub const ECU_DTC: DtcTable = DtcTable { base: 0x0080_4a00, count: 216, table: 0x000e_4ae2 };
-pub const BMU_DTC: DtcTable = DtcTable { base: 0x0080_4900, count: 181, table: 0x000e_0eaa };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Code(pub u16);

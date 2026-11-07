@@ -318,3 +318,106 @@ fn a_remote_bmu_runs_as_the_simulation_s_own() {
     assert!(ram(bmu.node().system()) == ram(whole.bmu().system()), "the BMU diverged");
     assert!(bmu.node().system().cpu().pc == whole.bmu().system().cpu().pc);
 }
+
+const OP_MODE_READY: u32 = 3;
+const OP_MODE_DRIVE: u32 = 4;
+
+fn with_ev_ecu(ev_ecu: &EvEcu) -> Simulation {
+    Simulation::new(ev_ecu, &firmware::BMU_9499B11500)
+}
+
+fn with_bmu(bmu: &Bmu) -> Simulation {
+    Simulation::new(&firmware::EV_ECU_9499A18206, bmu)
+}
+
+fn ev_ecu_completes_post(ev_ecu: &EvEcu) {
+    let mut sim = with_ev_ecu(ev_ecu);
+    sim.run(8_000_000);
+    let state = sim.ev_ecu().system().peek(ev_ecu.layout.ic2_startup_state, 2);
+    assert_eq!(state, 0xffff, "{} did not complete POST", ev_ecu.part);
+}
+
+fn ev_ecu_reaches_ready(mut sim: Simulation, part: &str) {
+    sim.run(250_000_000);
+    let mode = sim.ecu_op_mode();
+    assert!(
+        (OP_MODE_READY..=OP_MODE_DRIVE).contains(&mode),
+        "{part}: operating mode {mode}, handshake {}; DTCs {:?}",
+        sim.ecu_mode_code(),
+        sim.ecu_dtcs()
+    );
+}
+
+fn bmu_broadcasts(bmu: &Bmu) {
+    let mut sim = with_bmu(bmu);
+    sim.run(45_000_000);
+    for id in [0x373u16, 0x374, 0x375] {
+        let f = sim.bus().last(id).unwrap_or_else(|| panic!("{} never sent {id:03x}", bmu.part));
+        assert!(f.data.iter().any(|&b| b != 0), "{}: {id:03x} all zero", bmu.part);
+    }
+    let confirmed: Vec<_> = sim.bmu_dtcs().into_iter().filter(|(_, c)| *c).collect();
+    assert!(!confirmed.iter().any(|(code, _)| code == "P1A51"), "{}: {confirmed:?}", bmu.part);
+}
+
+macro_rules! every_ev_ecu {
+    ($($module:ident: $build:path),* $(,)?) => {$(
+        mod $module {
+            use super::*;
+
+            #[test]
+            fn completes_post() {
+                ev_ecu_completes_post(&$build);
+            }
+
+            #[test]
+            fn reaches_ready() {
+                ev_ecu_reaches_ready(with_ev_ecu(&$build), $build.part);
+            }
+        }
+    )*};
+}
+
+macro_rules! every_bmu {
+    ($($module:ident: $build:path),* $(,)?) => {$(
+        mod $module {
+            use super::*;
+
+            #[test]
+            fn broadcasts_the_battery() {
+                bmu_broadcasts(&$build);
+            }
+        }
+    )*};
+}
+
+every_ev_ecu! {
+    ev_ecu_9499a18206: firmware::EV_ECU_9499A18206,
+    ev_ecu_9499b13103: firmware::EV_ECU_9499B13103,
+    ev_ecu_9499a43902: firmware::EV_ECU_9499A43902,
+}
+
+every_bmu! {
+    bmu_9499b11500: firmware::BMU_9499B11500,
+    bmu_9499a84200: firmware::BMU_9499A84200,
+}
+
+#[test]
+fn czero_pair_reaches_ready() {
+    let sim = Simulation::new(&firmware::EV_ECU_9499A43902, &firmware::BMU_9499A84200);
+    ev_ecu_reaches_ready(sim, "C-Zero pair");
+}
+
+#[test]
+fn every_build_is_in_the_registry() {
+    let mut parts: Vec<&str> = firmware::EV_ECUS.iter().map(|b| b.part).chain(firmware::BMUS.iter().map(|b| b.part)).collect();
+    parts.sort();
+    parts.dedup();
+    assert_eq!(parts.len(), firmware::EV_ECUS.len() + firmware::BMUS.len());
+    for b in firmware::EV_ECUS {
+        assert_eq!(b.image.len(), 0x10_0000, "{}", b.part);
+        assert!(b.image.windows(10).any(|w| w == b.part.as_bytes()), "{} not in its image", b.part);
+    }
+    for b in firmware::BMUS {
+        assert_eq!(b.image.len(), 0x10_0000, "{}", b.part);
+    }
+}

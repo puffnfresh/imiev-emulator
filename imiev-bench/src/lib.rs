@@ -6,17 +6,24 @@ use mh8106f::System;
 
 mod adc;
 pub mod dtc;
+pub mod firmware;
+pub mod layout;
 mod parts;
 
 #[cfg(test)]
 mod tests;
 
 use adc::{BMU_BOOT_ADC, EV_ECU_BOOT_ADC};
+pub use dtc::DtcTable;
+pub use firmware::{Bmu, EvEcu};
+pub use layout::EvEcuLayout;
 pub use mh8106f::CanFrame;
 pub use parts::*;
 
-const BMU_FW: &[u8] = include_bytes!("../../firmware/bmu/9499B11500.bin");
-const EV_ECU_FW: &[u8] = include_bytes!("../../firmware/ev-ecu/9499A18206.bin");
+#[cfg(test)]
+const BMU_FW: &[u8] = firmware::BMU_9499B11500.image;
+#[cfg(test)]
+const EV_ECU_FW: &[u8] = firmware::EV_ECU_9499A18206.image;
 
 const CAN_DLC_MAX: usize = 8;
 
@@ -24,9 +31,6 @@ const BUS_PUMP_INTERVAL: u64 = 10_000;
 
 pub const CYCLES_PER_SECOND: u64 = 160_000_000;
 
-const ECU_MODE_STATUS_CODE: u32 = 0x0080_e595; // drive-engagement handshake stage (climbs to 4 then 5)
-const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
-const ECU_TORQUE_REQUEST: u32 = 0x0080_d384; // EV-ECU motor torque request (signed 16-bit)
 
 pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     let mut buf = [0u8; CAN_DLC_MAX];
@@ -164,12 +168,18 @@ pub struct Simulation {
     bus: CanBus,
     pump_every: u64,
     cycle: u64,
+    layout: EvEcuLayout,
+    bmu_dtc: DtcTable,
 }
 
 impl Simulation {
     pub fn imiev() -> Simulation {
-        let bmu = imiev_bmu();
-        let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
+        Self::new(&firmware::EV_ECU_9499A18206, &firmware::BMU_9499B11500)
+    }
+
+    pub fn new(ev_ecu: &EvEcu, bmu: &Bmu) -> Simulation {
+        let layout = ev_ecu.layout;
+        let ev_ecu = Node::new("EV-ECU", ev_ecu.image)
             .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
             .with_part(Box::new(Contactor))
@@ -180,7 +190,7 @@ impl Simulation {
             .with_part(Box::new(BacklampRelay))
             .with_local_part(Box::new(Ic2Companion::default()));
         Simulation {
-            bmu,
+            bmu: bmu_node(bmu),
             ev_ecu,
             driver: DriverControls::default(),
             sources: vec![Box::new(Vehicle)],
@@ -188,6 +198,8 @@ impl Simulation {
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
             cycle: 0,
+            layout,
+            bmu_dtc: bmu.dtc,
         }
     }
 
@@ -220,23 +232,27 @@ impl Simulation {
     }
 
     pub fn ecu_op_mode(&self) -> u32 {
-        self.ev_ecu.system().peek(EV_ECU_OPERATING_MODE, 1)
+        self.ev_ecu.system().peek(self.layout.operating_mode, 1)
     }
 
     pub fn ecu_mode_code(&self) -> u32 {
-        self.ev_ecu.system().peek(ECU_MODE_STATUS_CODE, 1)
+        self.ev_ecu.system().peek(self.layout.mode_status_code, 1)
     }
 
     pub fn ecu_torque_request(&self) -> i32 {
-        self.ev_ecu.system().peek(ECU_TORQUE_REQUEST, 2) as i16 as i32
+        self.layout.torque_request.map_or(0, |a| self.ev_ecu.system().peek(a, 2) as i16 as i32)
     }
 
-    pub fn ecu_dtcs(&self) -> Vec<(dtc::Code, bool)> {
-        dtc::scan(self.ev_ecu.system(), &dtc::ECU_DTC)
+    pub fn ecu_dtcs(&self) -> Vec<(String, bool)> {
+        dtc::scan(self.ev_ecu.system(), &self.layout.dtc)
     }
 
-    pub fn bmu_dtcs(&self) -> Vec<(dtc::Code, bool)> {
-        dtc::scan(self.bmu.system(), &dtc::BMU_DTC)
+    pub fn bmu_dtcs(&self) -> Vec<(String, bool)> {
+        dtc::scan(self.bmu.system(), &self.bmu_dtc)
+    }
+
+    pub fn layout(&self) -> &EvEcuLayout {
+        &self.layout
     }
 
     pub fn run(&mut self, steps: u64) {
@@ -299,8 +315,8 @@ impl Simulation {
     }
 }
 
-fn imiev_bmu() -> Node {
-    Node::new("BMU", BMU_FW)
+fn bmu_node(bmu: &Bmu) -> Node {
+    Node::new("BMU", bmu.image)
         .with_adc_env(BMU_BOOT_ADC)
         .with_part(Box::new(Cmu::default()))
         .with_part(Box::new(LeakDetector))
@@ -311,11 +327,16 @@ pub struct RemoteBmu {
     node: Node,
     bus: CanBus,
     cycle: u64,
+    dtc: DtcTable,
 }
 
 impl RemoteBmu {
     pub fn imiev() -> RemoteBmu {
-        RemoteBmu { node: imiev_bmu(), bus: CanBus::default(), cycle: 0 }
+        Self::new(&firmware::BMU_9499B11500)
+    }
+
+    pub fn new(bmu: &Bmu) -> RemoteBmu {
+        RemoteBmu { node: bmu_node(bmu), bus: CanBus::default(), cycle: 0, dtc: bmu.dtc }
     }
 
     pub fn run_to_pump(&mut self) {
@@ -347,7 +368,7 @@ impl RemoteBmu {
     }
 
     pub fn dtcs(&self) -> Vec<(String, bool)> {
-        dtc::scan(self.node.system(), &dtc::BMU_DTC)
+        dtc::scan(self.node.system(), &self.dtc)
     }
 }
 
