@@ -144,6 +144,10 @@ impl System {
         self.mem.ic2.take_tx_bytes()
     }
 
+    pub fn activity(&self) -> u64 {
+        self.mem.activity
+    }
+
     pub fn ic2_rx_pending(&self) -> bool {
         self.mem.ic2.rx_pending()
     }

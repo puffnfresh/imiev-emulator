@@ -39,6 +39,7 @@ pub(crate) struct Machine {
     pub(crate) wwatch: Option<(u32, u32)>,
     pub(crate) cur_pc: u32,
     pub(crate) wwatch_hits: Vec<(u32, u32, u32)>,
+    pub(crate) activity: u64,
 }
 
 impl Machine {
@@ -61,6 +62,7 @@ impl Machine {
             wwatch: None,
             cur_pc: 0,
             wwatch_hits: Vec::new(),
+            activity: 0,
         }
     }
 
@@ -98,6 +100,7 @@ impl Machine {
 
     fn ic2_service_tx(&mut self) {
         if self.ic2.take_tx_event() {
+            self.activity += 1;
             self.ic2.set_tx_complete();
             self.icu.raise(SIO23_IVECT);
         }
@@ -116,6 +119,7 @@ impl Machine {
                 }
             }
             self.ic2.set_dma5_complete();
+            self.activity += 1;
             self.icu.raise(DMA59_IVECT);
         }
     }
@@ -167,10 +171,17 @@ impl Machine {
                 self.wwatch_hits.push((self.cur_pc, a, v));
             }
         }
+        let mut claimed = false;
         for dev in self.devices() {
             if dev.handles(a) {
-                return dev.write(a, size, v);
+                dev.write(a, size, v);
+                claimed = true;
+                break;
             }
+        }
+        if claimed {
+            self.activity += 1;
+            return;
         }
         if let Some(off) = self.ram_off(a) {
             be_write(&mut self.ram, off, size, v)
