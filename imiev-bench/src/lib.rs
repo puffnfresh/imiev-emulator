@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use mh8106f::{CanFrame, System};
+use mh8106f::System;
 
 mod adc;
 pub mod dtc;
@@ -12,6 +12,7 @@ mod parts;
 mod tests;
 
 use adc::{BMU_BOOT_ADC, EV_ECU_BOOT_ADC};
+pub use mh8106f::CanFrame;
 pub use parts::*;
 
 const BMU_FW: &[u8] = include_bytes!("../../firmware/bmu.bin");
@@ -167,11 +168,7 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn imiev() -> Simulation {
-        let bmu = Node::new("BMU", BMU_FW)
-            .with_adc_env(BMU_BOOT_ADC)
-            .with_part(Box::new(Cmu::default()))
-            .with_part(Box::new(LeakDetector))
-            .with_local_part(Box::new(Eeprom::default()));
+        let bmu = imiev_bmu();
         let ev_ecu = Node::new("EV-ECU", EV_ECU_FW)
             .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
@@ -267,9 +264,14 @@ impl Simulation {
     }
 
     fn pump(&mut self) {
-        let Simulation { bmu, ev_ecu, driver, sources, inverter, bus, .. } = self;
-        let mut tx: Vec<CanFrame> = Vec::new();
-        tx.append(&mut bmu.drain_tx());
+        let bmu_tx = self.bmu.drain_tx();
+        let tx = self.pump_ev_ecu(bmu_tx);
+        RemoteBmu::receive_into(&mut self.bmu, &tx, &self.bus);
+    }
+
+    fn pump_ev_ecu(&mut self, bmu_tx: Vec<CanFrame>) -> Vec<CanFrame> {
+        let Simulation { ev_ecu, driver, sources, inverter, bus, .. } = self;
+        let mut tx = bmu_tx;
         tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
@@ -279,12 +281,73 @@ impl Simulation {
         tx.extend(inverter.frames(bus));
         for f in &tx {
             bus.record(*f);
-            bmu.deliver(f);
             ev_ecu.deliver(f);
         }
-        bmu.update_parts(bus);
         ev_ecu.update_parts(bus);
         driver.update(ev_ecu.system_mut(), bus);
+        tx
+    }
+
+    pub fn run_ev_ecu_to_pump(&mut self) {
+        let n = self.pump_every - self.cycle % self.pump_every;
+        self.ev_ecu.run_steps(n, &self.bus);
+        self.cycle += n;
+    }
+
+    pub fn pump_with_remote_bmu(&mut self, bmu_tx: Vec<CanFrame>) -> Vec<CanFrame> {
+        self.pump_ev_ecu(bmu_tx)
+    }
+}
+
+fn imiev_bmu() -> Node {
+    Node::new("BMU", BMU_FW)
+        .with_adc_env(BMU_BOOT_ADC)
+        .with_part(Box::new(Cmu::default()))
+        .with_part(Box::new(LeakDetector))
+        .with_local_part(Box::new(Eeprom::default()))
+}
+
+pub struct RemoteBmu {
+    node: Node,
+    bus: CanBus,
+    cycle: u64,
+}
+
+impl RemoteBmu {
+    pub fn imiev() -> RemoteBmu {
+        RemoteBmu { node: imiev_bmu(), bus: CanBus::default(), cycle: 0 }
+    }
+
+    pub fn run_to_pump(&mut self) {
+        let n = BUS_PUMP_INTERVAL - self.cycle % BUS_PUMP_INTERVAL;
+        self.node.run_steps(n, &self.bus);
+        self.cycle += n;
+    }
+
+    pub fn drain_tx(&mut self) -> Vec<CanFrame> {
+        self.node.drain_tx()
+    }
+
+    pub fn receive(&mut self, tx: &[CanFrame]) {
+        for f in tx {
+            self.bus.record(*f);
+        }
+        Self::receive_into(&mut self.node, tx, &self.bus);
+    }
+
+    fn receive_into(bmu: &mut Node, tx: &[CanFrame], bus: &CanBus) {
+        for f in tx {
+            bmu.deliver(f);
+        }
+        bmu.update_parts(bus);
+    }
+
+    pub fn node(&self) -> &Node {
+        &self.node
+    }
+
+    pub fn dtcs(&self) -> Vec<(String, bool)> {
+        dtc::scan(self.node.system(), &dtc::BMU_DTC)
     }
 }
 

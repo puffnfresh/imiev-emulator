@@ -299,3 +299,22 @@ fn imiev_holds_every_drive_position() {
         assert!(dtcs.is_empty(), "DTCs confirmed in {name}: {dtcs:?}");
     }
 }
+
+#[test]
+fn a_remote_bmu_runs_as_the_simulation_s_own() {
+    const CYCLES: u64 = CYCLES_PER_SECOND;
+    let ram = |s: &mh8106f::System| (0x80_0000u32..0x81_4000).step_by(4).map(|a| s.peek(a, 4)).collect::<Vec<_>>();
+    let mut whole = Simulation::imiev();
+    whole.run(CYCLES);
+    let mut ecu = Simulation::imiev();
+    let mut bmu = RemoteBmu::imiev();
+    for _ in 0..CYCLES / BUS_PUMP_INTERVAL {
+        ecu.run_ev_ecu_to_pump();
+        bmu.run_to_pump();
+        let tx = ecu.pump_with_remote_bmu(bmu.drain_tx());
+        bmu.receive(&tx);
+    }
+    assert!(ram(ecu.ev_ecu().system()) == ram(whole.ev_ecu().system()), "the EV-ECU diverged");
+    assert!(ram(bmu.node().system()) == ram(whole.bmu().system()), "the BMU diverged");
+    assert!(bmu.node().system().cpu().pc == whole.bmu().system().cpu().pc);
+}
