@@ -268,13 +268,12 @@ fn imiev_idles_in_ready_without_dtcs() {
         assert_ecu_not_confirmed(&sim, dtc, why);
     }
     assert!(dtcs.is_empty(), "DTCs confirmed idling in READY: {dtcs:?}");
-    let bmu: Vec<String> = sim.bmu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
     for (dtc, why) in [
         ("P1AB5", "CMU01 reports a temperature below -30 C (an unfed sensor reads -50)"),
         ("P1A8E", "CMU01's balancing status (b1 of its first response) is not 0"),
         ("P1AC3", "the battery cooling fan's feedback is high while it is at rest"),
     ] {
-        assert!(!bmu.iter().any(|d| d == dtc), "{dtc}: {why}");
+        assert_eq!(bmu_dtc(&sim, dtc) & CONFIRMED, 0, "{dtc} confirmed: {why}");
     }
 }
 
@@ -282,4 +281,19 @@ fn imiev_idles_in_ready_without_dtcs() {
 #[should_panic(expected = "the EV-ECU has no DTC P0000")]
 fn ecu_dtc_rejects_a_code_the_firmware_lacks() {
     ecu_dtc(&Simulation::imiev(), "P0000");
+}
+
+#[test]
+fn imiev_holds_every_drive_position() {
+    let mut sim = Simulation::imiev();
+    sim.run(300_000_000);
+    sim.set_pedal(30.0);
+    for (gear, name) in [(Gear::Eco, "B"), (Gear::Reverse, "R"), (Gear::Comfort, "C")] {
+        sim.set_gear(gear);
+        sim.run(2 * CYCLES_PER_SECOND);
+        let dtcs = confirmed_ecu_dtcs(&sim);
+        assert_eq!(sim.ecu_op_mode(), 4, "shut down in {name}; confirmed: {dtcs:?}");
+        assert_ecu_not_confirmed(&sim, "P1A0F", &format!("{name}: the backlamp relay's switched side doesn't follow it"));
+        assert!(dtcs.is_empty(), "DTCs confirmed in {name}: {dtcs:?}");
+    }
 }

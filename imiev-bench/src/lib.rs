@@ -158,6 +158,7 @@ impl Simulation {
             .with_part(Box::new(VacuumPump::default()))
             .with_part(Box::new(AirbagEcu::default()))
             .with_part(Box::new(Charger))
+            .with_part(Box::new(BacklampRelay))
             .with_local_part(Box::new(Ic2Companion::default()));
         Simulation {
             bmu,

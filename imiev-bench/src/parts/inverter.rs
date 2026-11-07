@@ -126,7 +126,7 @@ impl Inverter {
         let [wh, wl] = self.rpm_word();
         let [th, tl] = self.torque_word();
         let gear418 = bus.last(ECU_GEAR_ID).map(|f| f.data[0]).unwrap_or(0);
-        let drive_gear = matches!(gear418, 0x44 | 0x52 | 0x42 | 0x43); // D | R | B | C
+        let drive_gear = matches!(gear418, b'D' | b'R' | 0x83 | 0x32); // D, R, B (Gear::Eco), C (Gear::Comfort), as OVMS reads them
         let (mut b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
         if self.engaging(bus) {
             b6 &= !INV_STATUS_SETTLED_BIT;
