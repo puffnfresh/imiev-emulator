@@ -34,7 +34,7 @@ pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     CanFrame { id, dlc: n as u8, data: buf }
 }
 
-pub trait Part {
+pub trait Part: Send {
     fn update(&mut self, chip: &mut System, bus: &CanBus);
 
     fn polling(&self) -> bool {
@@ -106,6 +106,13 @@ impl Node {
 
     fn deliver(&mut self, f: &CanFrame) {
         self.sys.inject_can0(f.id, &f.data[..f.dlc as usize]);
+    }
+
+    fn run_steps(&mut self, n: u64, bus: &CanBus) {
+        for _ in 0..n {
+            self.step();
+            self.update_local_parts(bus);
+        }
     }
 
     fn update_parts(&mut self, bus: &CanBus) {
@@ -236,29 +243,23 @@ impl Simulation {
     }
 
     pub fn run(&mut self, steps: u64) {
-        for _ in 0..steps {
-            {
-                let Simulation { bmu, ev_ecu, bus, .. } = &mut *self;
-                for n in [bmu, ev_ecu] {
-                    n.step();
-                    n.update_local_parts(bus);
-                }
-            }
-            self.cycle += 1;
-            if self.cycle.is_multiple_of(self.pump_every) {
-                self.pump();
-            }
-        }
+        self.run_chunks(steps, |sim, n| {
+            let Simulation { bmu, ev_ecu, bus, .. } = sim;
+            run_both(bmu, ev_ecu, n, bus);
+        });
     }
 
     pub fn warm_bmu(&mut self, steps: u64) {
-        for _ in 0..steps {
-            {
-                let Simulation { bmu, bus, .. } = &mut *self;
-                bmu.step();
-                bmu.update_local_parts(bus);
-            }
-            self.cycle += 1;
+        self.run_chunks(steps, |sim, n| sim.bmu.run_steps(n, &sim.bus));
+    }
+
+    fn run_chunks(&mut self, steps: u64, mut step_nodes: impl FnMut(&mut Simulation, u64)) {
+        let mut left = steps;
+        while left > 0 {
+            let n = left.min(self.pump_every - self.cycle % self.pump_every);
+            step_nodes(self, n);
+            self.cycle += n;
+            left -= n;
             if self.cycle.is_multiple_of(self.pump_every) {
                 self.pump();
             }
@@ -285,4 +286,26 @@ impl Simulation {
         ev_ecu.update_parts(bus);
         driver.update(ev_ecu.system_mut(), bus);
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const PARALLEL_MIN_STEPS: u64 = 1_000;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_both(bmu: &mut Node, ev_ecu: &mut Node, n: u64, bus: &CanBus) {
+    if n < PARALLEL_MIN_STEPS {
+        bmu.run_steps(n, bus);
+        ev_ecu.run_steps(n, bus);
+        return;
+    }
+    std::thread::scope(|s| {
+        s.spawn(|| bmu.run_steps(n, bus));
+        ev_ecu.run_steps(n, bus);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn run_both(bmu: &mut Node, ev_ecu: &mut Node, n: u64, bus: &CanBus) {
+    bmu.run_steps(n, bus);
+    ev_ecu.run_steps(n, bus);
 }
