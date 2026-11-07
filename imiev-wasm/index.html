@@ -84,10 +84,9 @@
     </ul>
   </fieldset>
   <script type="module">
-  import init, { Sim } from './pkg/imiev_wasm.js';
+  import { ensureIsolation, startSingle, startThreaded } from './engine.js';
 
   const OP_MODES = { 0: 'REST', 2: 'PRECHARGE', 3: 'READY', 4: 'DRIVE', 5: 'SHUTDOWN' };
-  const STEP_CHUNK = 1_000_000;
   const OP_MODE_DRIVE = 4;
 
   const $ = (id) => document.getElementById(id);
@@ -105,50 +104,41 @@
   }));
   }
 
-  init().then(() => {
-  const sim = new Sim();
-  let steps = 0;
+  function render(s) {
+    if (s.error) {
+      $('status').textContent = `stopped: ${s.error}`;
+      return;
+    }
+    const threads = s.threads === 2 ? 'two threads' : 'one thread';
+    $('status').textContent = `running on ${threads} — ${s.cycles.toLocaleString()} steps`;
+    $('op-mode').textContent = `${OP_MODES[s.mode] ?? '?'} (${s.mode})`;
+    $('gear-box').disabled = s.mode !== OP_MODE_DRIVE;
+    $('mode-code').textContent = s.modeCode;
+    $('torque').textContent = s.torque;
+    for (const id of [0x285, 0x288, 0x298, 0x373, 0x374, 0x375]) {
+      $(`f${id.toString(16)}`).textContent = hex(s.frames[id]);
+    }
+    fillList($('dtc-ecu'), s.ecuDtcs);
+    fillList($('dtc-bmu'), s.bmuDtcs);
+  }
+
+  const isolated = await ensureIsolation();
+  const car = isolated ? startThreaded(render) : await startSingle(render);
 
   const accelBox = $('accel-box');
   const accel = $('accel');
   for (const r of document.querySelectorAll('input[name=gear]')) {
     r.addEventListener('change', () => {
       const g = Number(r.value);
-      sim.set_gear(g);
+      car.setGear(g);
       const park = g === 0;
       accelBox.hidden = park;
-      if (park) { accel.value = 0; $('accel-val').textContent = '0'; sim.set_pedal(0); }
+      if (park) { accel.value = 0; $('accel-val').textContent = '0'; car.setPedal(0); }
     });
   }
   accel.addEventListener('input', () => {
     $('accel-val').textContent = accel.value;
-    sim.set_pedal(Number(accel.value));
-  });
-
-  function render() {
-    const mode = sim.ecu_op_mode();
-    $('status').textContent = `running — ${steps.toLocaleString()} steps`;
-    $('op-mode').textContent = `${OP_MODES[mode] ?? '?'} (${mode})`;
-    $('gear-box').disabled = mode !== OP_MODE_DRIVE;
-    $('mode-code').textContent = sim.ecu_mode_code();
-    $('torque').textContent = sim.ecu_torque_request();
-    $('f285').textContent = hex(sim.bus_last(0x285));
-    $('f288').textContent = hex(sim.bus_last(0x288));
-    $('f298').textContent = hex(sim.bus_last(0x298));
-    $('f373').textContent = hex(sim.bus_last(0x373));
-    $('f374').textContent = hex(sim.bus_last(0x374));
-    $('f375').textContent = hex(sim.bus_last(0x375));
-    fillList($('dtc-ecu'), sim.ecu_dtcs());
-    fillList($('dtc-bmu'), sim.bmu_dtcs());
-  }
-
-  function frame() {
-    sim.run(STEP_CHUNK);
-    steps += STEP_CHUNK;
-    render();
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+    car.setPedal(Number(accel.value));
   });
   </script>
 </body>
