@@ -3,7 +3,8 @@
 }:
 
 runCommand "imiev-decompilation" { buildInputs = [ ghidra-m32r ]; } ''
-  cp ${../firmware}/* .
+  cp ${../firmware/ev-ecu/9499A18206.bin} ev-ecu.bin
+  cp ${../firmware/bmu/9499B11500.bin} bmu.bin
   mkdir tmp-project
 
   mkdir -p $out

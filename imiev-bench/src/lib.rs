@@ -15,8 +15,8 @@ use adc::{BMU_BOOT_ADC, EV_ECU_BOOT_ADC};
 pub use mh8106f::CanFrame;
 pub use parts::*;
 
-const BMU_FW: &[u8] = include_bytes!("../../firmware/bmu.bin");
-const EV_ECU_FW: &[u8] = include_bytes!("../../firmware/ev-ecu.bin");
+const BMU_FW: &[u8] = include_bytes!("../../firmware/bmu/9499B11500.bin");
+const EV_ECU_FW: &[u8] = include_bytes!("../../firmware/ev-ecu/9499A18206.bin");
 
 const CAN_DLC_MAX: usize = 8;
 

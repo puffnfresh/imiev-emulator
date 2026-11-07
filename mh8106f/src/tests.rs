@@ -43,7 +43,7 @@ fn unclaimed_sfr_addr_is_ram_scratch() {
 #[test]
 fn reset_vector_is_bra_to_handler() {
     // flash[0] = BRA; executing it from pc=0 should jump into the handler.
-    let fw = include_bytes!("../../firmware/bmu.bin");
+    let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
     let mut sys = System::new(fw);
     assert_eq!(sys.cpu.pc, 0);
     sys.step();
@@ -57,7 +57,7 @@ fn bmu_runs_under_timer_icu() {
     const DISPATCHER: u32 = 0x3994; // flash[0x80] BRA target
     const DEMUX: u32 = 0x8ce4; // sched_group_demux_fast
 
-    let fw = include_bytes!("../../firmware/bmu.bin");
+    let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
     let mut sys = System::new(fw);
 
     let mut armed = false;
@@ -98,7 +98,7 @@ fn bmu_runs_under_timer_icu() {
 
 #[test]
 fn bmu_adc_only_broadcasts_battery_frames() {
-    let fw = include_bytes!("../../firmware/bmu.bin");
+    let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
     let mut sys = System::new(fw);
     for (ch, v) in [(0usize, 0x300u16), (4, 0x300), (1, 0x330), (2, 0x200), (3, 0x200), (9, 0x800), (0xB, 0x800)] {
         sys.mem.adc.set_channel(ch, v);
@@ -123,7 +123,7 @@ fn bmu_adc_only_broadcasts_battery_frames() {
 
 #[test]
 fn bmu_arms_its_own_rx_mailboxes() {
-    let fw = include_bytes!("../../firmware/bmu.bin");
+    let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
     let mut sys = System::new(fw);
     for (ch, v) in [(0usize, 0x300u16), (4, 0x300), (1, 0x330), (2, 0x200), (3, 0x200), (9, 0x800), (0xB, 0x800)] {
         sys.mem.adc.set_channel(ch, v);
@@ -147,7 +147,7 @@ fn ecu_boots_and_reaches_dispatcher() {
     const RESET_HANDLER: u32 = 0x393c; // flash[0] BRA target (ECU)
     const DISPATCHER: u32 = 0x398c; // flash[0x80] BRA target (ECU)
 
-    let fw = include_bytes!("../../firmware/ev-ecu.bin");
+    let fw = include_bytes!("../../firmware/ev-ecu/9499A18206.bin");
     let mut sys = System::new(fw);
 
     // Reset vector branches to the ECU reset handler.
@@ -184,7 +184,7 @@ fn bmu_battery_model_unblocks_with_cmu_frames() {
     const BOARD_ARRAY: u32 = 0x0080_7f30; // can1_store_cell destination
     const CMU_RX_SLOT: u32 = 30;
 
-    let fw = include_bytes!("../../firmware/bmu.bin");
+    let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
     let mut sys = System::new(fw);
 
     // A CMU response frame:
@@ -237,7 +237,7 @@ fn bmu_records_injected_cell_voltage() {
     const CMU_RX_SLOT: u32 = 30;
 
     fn record(vraw: u16) -> u16 {
-        let fw = include_bytes!("../../firmware/bmu.bin");
+        let fw = include_bytes!("../../firmware/bmu/9499B11500.bin");
         let mut sys = System::new(fw);
         let [vh, vl] = vraw.to_be_bytes();
         let frame = [0u8, 0, 75, 0, vh, vl, vh, vl];
