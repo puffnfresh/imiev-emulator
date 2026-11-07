@@ -66,6 +66,7 @@ pub struct Ic2Companion {
     arm_ctr: u32,
     counter: u8,
     registers: [u8; 0x20],
+    counting: bool,
 }
 
 impl Ic2Companion {
@@ -92,6 +93,7 @@ impl Ic2Companion {
 
 impl Part for Ic2Companion {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
+        self.counting = false;
         for b in chip.ic2_take_tx() {
             if let Some(q) = self.reader.push(b) {
                 self.question = Some(q);
@@ -104,6 +106,7 @@ impl Part for Ic2Companion {
             return;
         }
         if self.started {
+            self.counting = true;
             self.arm_ctr = self.arm_ctr.wrapping_add(1);
             if self.arm_ctr % 64 == 32 {
                 chip.ic2_take_rx_armed();
@@ -125,6 +128,9 @@ impl Part for Ic2Companion {
                 self.started = true;
             }
         }
+    }
+    fn polling(&self) -> bool {
+        self.counting
     }
 }
 

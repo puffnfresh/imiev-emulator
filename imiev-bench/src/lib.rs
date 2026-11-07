@@ -36,6 +36,10 @@ pub fn frame(id: u16, data: &[u8]) -> CanFrame {
 
 pub trait Part {
     fn update(&mut self, chip: &mut System, bus: &CanBus);
+
+    fn polling(&self) -> bool {
+        false
+    }
 }
 
 pub trait BusSource {
@@ -48,6 +52,8 @@ pub struct Node {
     sys: System,
     parts: Vec<Box<dyn Part>>,
     local_parts: Vec<Box<dyn Part>>,
+    local_seen: Option<u64>,
+    local_polling: bool,
 }
 
 impl Node {
@@ -57,6 +63,8 @@ impl Node {
             sys: System::new(firmware),
             parts: Vec::new(),
             local_parts: Vec::new(),
+            local_seen: None,
+            local_polling: false,
         }
     }
 
@@ -108,10 +116,16 @@ impl Node {
     }
 
     fn update_local_parts(&mut self, bus: &CanBus) {
-        let Node { sys, local_parts, .. } = self;
+        let Node { sys, local_parts, local_seen, local_polling, .. } = self;
+        if !*local_polling && *local_seen == Some(sys.activity()) {
+            return;
+        }
+        *local_polling = false;
         for p in local_parts.iter_mut() {
             p.update(sys, bus);
+            *local_polling |= p.polling();
         }
+        *local_seen = Some(sys.activity());
     }
 }
 
