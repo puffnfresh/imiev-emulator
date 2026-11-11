@@ -16,9 +16,7 @@ const SETUP: &[(&str, bool)] = &[
     ("ATS0", false),
     ("ATH1", true),
     ("ATSP6", true),
-    ("ATCAF0", true),
-    ("ATCFC0", false),
-    ("ATAL", false),
+    ("ATCFC1", false),
 ];
 
 pub struct Elm327<T> {
@@ -29,6 +27,7 @@ pub struct Elm327<T> {
     prompt_at: u64,
     relisten_at: u64,
     header: Option<u16>,
+    formatting: Option<bool>,
     filter: Option<u32>,
     filter_set: Option<Option<u32>>,
     skipped: u64,
@@ -69,6 +68,7 @@ impl<T: Transport> Elm327<T> {
             prompt_at: 0,
             relisten_at: 0,
             header: None,
+            formatting: None,
             filter: None,
             filter_set: None,
             skipped: 0,
@@ -174,6 +174,14 @@ impl<T: Transport> Elm327<T> {
         Ok(())
     }
 
+    async fn set_formatting(&mut self, on: bool) -> Result<(), String> {
+        if self.formatting != Some(on) {
+            self.setting(if on { "ATCAF1" } else { "ATCAF0" }, true).await?;
+            self.formatting = Some(on);
+        }
+        Ok(())
+    }
+
     async fn apply_filter(&mut self) -> Result<(), String> {
         if self.filter_set == Some(self.filter) {
             return Ok(());
@@ -193,13 +201,20 @@ impl<T: Transport> CanAdapter for Elm327<T> {
         let Id::Standard(id) = frame.id() else {
             return Err("ELM327 adapters are only set up for 11-bit ids".into());
         };
+        let bytes = frame.data();
+        let payload = match bytes.first().map(|pci| pci >> 4) {
+            Some(0) => &bytes[1..1 + usize::from(bytes[0] & 0x0f).min(bytes.len() - 1)],
+            Some(3) => return Ok(()),
+            _ => return Err(format!("ELM327 adapters only send single-frame requests, not {bytes:02X?}")),
+        };
         self.stop_monitoring().await?;
+        self.set_formatting(true).await?;
         self.apply_filter().await?;
         if self.header != Some(id.as_raw()) {
             self.setting(&format!("ATSH{:03X}", id.as_raw()), true).await?;
             self.header = Some(id.as_raw());
         }
-        let data: String = frame.data().iter().map(|b| format!("{b:02X}")).collect();
+        let data: String = payload.iter().map(|b| format!("{b:02X}")).collect();
         self.type_line(&data).await.map_err(|e| format!("write failed: {e}"))?;
         let (lines, prompt) = self.read_until_prompt(SEND_MS).await?;
         if lines.iter().any(|l| l == "?") {
@@ -221,6 +236,9 @@ impl<T: Transport> CanAdapter for Elm327<T> {
             if self.transport.now_us() < self.relisten_at {
                 self.transport.read(timeout_ms).await?;
                 return Ok(Vec::new());
+            }
+            if self.filter.is_none() {
+                self.set_formatting(false).await?;
             }
             self.apply_filter().await?;
             self.type_line("ATMA").await?;
@@ -375,17 +393,17 @@ mod tests {
     }
 
     #[test]
-    fn sets_up_raw_can() {
+    fn sets_up_can() {
         let elm = open(Fake::new(vec![]));
         let commands = &elm.transport.commands;
-        for cmd in ["ATZ", "ATE0", "ATH1", "ATSP6", "ATCAF0", "ATCFC0"] {
+        for cmd in ["ATZ", "ATE0", "ATH1", "ATSP6", "ATCFC1"] {
             assert!(commands.iter().any(|c| c == cmd), "{cmd} in {commands:?}");
         }
     }
 
     #[test]
     fn answers_heard_while_sending() {
-        let mut elm = open(Fake::new(vec![("041800FF00000000", vec!["7520358025A15", "7620100"])]));
+        let mut elm = open(Fake::new(vec![("1800FF00", vec!["7520358025A15", "7620100"])]));
         elm.filter(Some(0x752));
         let request = frame(0x751, &[0x04, 0x18, 0x00, 0xff, 0x00, 0, 0, 0]);
         pollster::block_on(elm.send(request)).unwrap();
@@ -396,9 +414,26 @@ mod tests {
 
         pollster::block_on(elm.send(request)).unwrap();
         let commands = &elm.transport.commands;
-        let set: Vec<&String> = commands.iter().filter(|c| c.starts_with("ATCRA") || c.starts_with("ATSH")).collect();
-        assert_eq!(set, ["ATCRA752", "ATSH751"]);
-        assert_eq!(commands.iter().filter(|c| *c == "041800FF00000000").count(), 2);
+        let set: Vec<&String> =
+            commands.iter().filter(|c| ["ATCAF", "ATCRA", "ATSH"].iter().any(|p| c.starts_with(p))).collect();
+        assert_eq!(set, ["ATCAF1", "ATCRA752", "ATSH751"]);
+        assert_eq!(commands.iter().filter(|c| *c == "1800FF00").count(), 2);
+    }
+
+    #[test]
+    fn leaves_flow_control_to_the_adapter() {
+        let first = "76210165A8704850002";
+        let mut elm = open(Fake::new(vec![("1A87", vec![first, "762210000000000000", "76222000000"])]));
+        pollster::block_on(elm.send(frame(0x761, &[0x02, 0x1a, 0x87, 0, 0, 0, 0, 0]))).unwrap();
+        let sent = elm.transport.commands.len();
+        pollster::block_on(elm.send(frame(0x761, &[0x30, 0, 0, 0, 0, 0, 0, 0]))).unwrap();
+        assert_eq!(elm.transport.commands.len(), sent);
+        let events = pollster::block_on(elm.recv(10)).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[2], Event::Frame { frame, .. } if frame.data() == [0x22, 0, 0, 0]));
+
+        let first_frame = frame(0x761, &[0x10, 0x09, 1, 2, 3, 4, 5, 6]);
+        assert!(pollster::block_on(elm.send(first_frame)).unwrap_err().contains("single-frame"));
     }
 
     #[test]
@@ -412,11 +447,11 @@ mod tests {
         assert_eq!(events[1], Event::Warning("adapter: BUFFER FULL".into()));
         assert!(elm.monitoring);
 
-        pollster::block_on(elm.send(frame(0x751, &[0x30, 0, 0, 0, 0, 0, 0, 0]))).unwrap();
+        pollster::block_on(elm.send(frame(0x751, &[0x02, 0x10, 0x92, 0, 0, 0, 0, 0]))).unwrap();
         assert!(!elm.monitoring);
         let commands = &elm.transport.commands;
-        let tail: Vec<&str> = commands[commands.len() - 5..].iter().map(String::as_str).collect();
-        assert_eq!(tail, ["ATAR", "ATMA", "", "ATSH751", "3000000000000000"]);
+        let tail: Vec<&str> = commands[commands.len() - 7..].iter().map(String::as_str).collect();
+        assert_eq!(tail, ["ATCAF0", "ATAR", "ATMA", "", "ATCAF1", "ATSH751", "1092"]);
         assert_eq!(pollster::block_on(elm.recv(10)).unwrap(), [Event::Other, Event::Other]);
     }
 
