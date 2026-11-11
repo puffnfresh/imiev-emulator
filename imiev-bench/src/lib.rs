@@ -196,7 +196,7 @@ impl Simulation {
             bmu: bmu_node(bmu),
             ev_ecu,
             driver: DriverControls::default(),
-            sources: vec![Box::new(Vehicle), Box::new(Etacs::new(BENCH_VIN))],
+            sources: vec![Box::new(Vehicle), Box::new(Etacs::new(BENCH_VIN)), Box::new(SteeringAngleSensor::default())],
             inverter: Inverter::default(),
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
