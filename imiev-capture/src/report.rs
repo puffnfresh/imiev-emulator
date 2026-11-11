@@ -18,7 +18,7 @@ pub async fn info<A: CanAdapter>(bus: &mut Bus<A>, ecus: &[Ecu]) -> String {
         text += &format!("{}:\n", ecu.name());
         match bus.identification(ecu).await {
             Ok(lines) => lines.iter().for_each(|(label, id)| text += &format!("  {label}: {id}\n")),
-            Err(_) => text += "  no answer\n",
+            Err(e) => text += &format!("  {e}\n"),
         }
     }
     text

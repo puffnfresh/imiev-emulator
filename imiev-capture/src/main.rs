@@ -377,7 +377,7 @@ async fn info(ecus: Vec<Ecu>) -> Result<(), String> {
             println!("{}:", ecu.name());
             match bus.identification(ecu).await {
                 Ok(lines) => lines.iter().for_each(|(label, id)| println!("  {label}: {id}")),
-                Err(_) => println!("  no answer"),
+                Err(e) => println!("  {e}"),
             }
         }
         Ok(())
