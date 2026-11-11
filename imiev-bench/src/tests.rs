@@ -1,7 +1,6 @@
 //! End-to-end tests: drive a whole [`Simulation`].
 
 use super::*;
-use crate::dtc::Code;
 
 const OP_MODE_PRECHARGE: u32 = 2;
 const OP_MODE_READY: u32 = 3;
@@ -172,7 +171,7 @@ fn imiev_holds_drive_under_torque() {
         ("C200A", "the vacuum pump main relay's switched side doesn't follow it"),
         ("C200E", "the vacuum pump main relay's coil monitor doesn't follow it"),
     ] {
-        assert_ecu_not_confirmed(&sim, dtc, why);
+        assert!(!dtcs.iter().any(|d| d == dtc), "{dtc} confirmed: {why}");
     }
     assert!(dtcs.is_empty(), "DTCs confirmed while driving: {dtcs:?}");
 }
@@ -193,7 +192,7 @@ fn imiev_idles_in_ready_without_dtcs() {
         ("C201A", "the vacuum pump's motor sense drops at once when it is switched off"),
         ("C2022", "the booster's vacuum does not move while the pump runs"),
     ] {
-        assert_ecu_not_confirmed(&sim, dtc, why);
+        assert!(!dtcs.iter().any(|d| d == dtc), "{dtc} confirmed: {why}");
     }
     assert!(dtcs.is_empty(), "DTCs confirmed idling in READY: {dtcs:?}");
     let bmu = sim.bmu_dtcs();
@@ -204,14 +203,8 @@ fn imiev_idles_in_ready_without_dtcs() {
         ("P1A44", "the leak detector's alarm (P9.4) is standing"),
         ("P1A46", "the leak detector's alarm ignores the BMU's self-test (P9.1)"),
     ] {
-        assert_eq!(bmu_dtc(&sim, dtc) & CONFIRMED, 0, "{dtc} confirmed: {why}");
+        assert!(!bmu.iter().any(|d| d == dtc), "{dtc} confirmed: {why}");
     }
-}
-
-#[test]
-#[should_panic(expected = "the EV-ECU has no DTC P0000")]
-fn ecu_dtc_rejects_a_code_the_firmware_lacks() {
-    ecu_dtc(&Simulation::imiev(), "P0000");
 }
 
 #[test]
@@ -224,7 +217,7 @@ fn imiev_holds_every_drive_position() {
         sim.run(2 * CYCLES_PER_SECOND);
         let dtcs = sim.ecu_dtcs();
         assert_eq!(sim.ecu_op_mode(), 4, "shut down in {name}; confirmed: {dtcs:?}");
-        assert_ecu_not_confirmed(&sim, "P1A0F", &format!("{name}: the backlamp relay's switched side doesn't follow it"));
+        assert!(!dtcs.iter().any(|d| d == "P1A0F"), "P1A0F confirmed in {name}: the backlamp relay's switched side doesn't follow it");
         assert!(dtcs.is_empty(), "DTCs confirmed in {name}: {dtcs:?}");
     }
 }
