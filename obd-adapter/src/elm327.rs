@@ -18,6 +18,7 @@ const SETUP: &[(&str, bool)] = &[
     ("ATSP6", true),
     ("ATCAF0", true),
     ("ATCFC0", false),
+    ("ATAL", false),
 ];
 
 pub struct Elm327<T> {
