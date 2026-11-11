@@ -52,8 +52,6 @@ const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until
 const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
 const PRECHARGE_TAU_S: f32 = 0.05;
 const ECU_MODE_DRIVE: u8 = 0x14; // 0x285 b2 once the EV-ECU is in DRIVE
-const INV_GATE_IDS: [u16; 3] = [0x100, 0x110, 0x111]; // gate-driver identity frames
-const INV_GATE_ID_WORD: [u8; 2] = [0x01, 0x01]; // matches the ECU's expected_id_a
 const ECU_GEAR_ID: u16 = 0x418; // the ECU re-broadcasts the selected gear here
 const INV_STATUS_PARK: (u8, u8) = (0x11, 0x10); // 0x288 b6:b7 - inverter idle/ready in Park
 const INV_STATUS_DRIVE: (u8, u8) = (0x1f, 0x1c); // b6:b7 - gate drivers enabled, drive-engaged
@@ -145,9 +143,6 @@ impl Inverter {
         out.push(frame(ABS_FRONT_ID, &[0x00, 0x03, rh, rl, rh, rl, 0xff, 0xff]));
         out.push(frame(ABS_REAR_ID, &[0x00, 0x20, bh, bl, rh, rl, rh, rl]));
         out.push(frame(ABS_SPEED_ID, &[vh, vl, 0, 0, 0, 0, 0, 0]));
-        for id in INV_GATE_IDS {
-            out.push(frame(id, &[INV_GATE_ID_WORD[0], INV_GATE_ID_WORD[1], 0, 0, 0, 0, 0, 0]));
-        }
         out
     }
 }
