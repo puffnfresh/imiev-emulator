@@ -80,5 +80,6 @@ impl Part for DriverControls {
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_2_SIGNAL, sub);
         let brake = pedal_raw(self.brake_pct, BPS_RELEASED_RAW, BPS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::BRAKE_SIGNAL, brake);
+        chip.adc_mut().set_channel(ev_ecu_adc::BRAKE_SIGNAL_CZERO, brake);
     }
 }

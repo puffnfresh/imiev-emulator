@@ -28,6 +28,8 @@ pub(crate) mod ev_ecu_adc {
     pub const ACCEL_2_SUPPLY: usize = 11; // accelerator sensor 2 (sub) 5V supply
     pub const CHARGE_PORT: usize = 12; // charge-port connection sense
     pub const VACUUM_PUMP_VOLTAGE: usize = 13; // brake vacuum pump motor supply sense
+    pub const BRAKE_SUPPLY_CZERO: usize = 14;
+    pub const BRAKE_SIGNAL_CZERO: usize = 15;
 }
 
 pub(crate) const BMU_BOOT_ADC: &[(usize, u16)] = &[
@@ -45,6 +47,8 @@ pub(crate) const EV_ECU_BOOT_ADC: &[(usize, u16)] = &[
     (ev_ecu_adc::BRAKE_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::ACCEL_1_SIGNAL, 0x0c0),  // released accelerator, main
     (ev_ecu_adc::BRAKE_SIGNAL, 0x130),    // released brake (~1.5V)
+    (ev_ecu_adc::BRAKE_SUPPLY_CZERO, SUPPLY_5V),
+    (ev_ecu_adc::BRAKE_SIGNAL_CZERO, 0x130),
     (ev_ecu_adc::VACUUM_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::ACCEL_2_SIGNAL, 0x060),  // released accelerator, sub (~1/2 of main)
     (ev_ecu_adc::VACUUM_OUTPUT, 0x200),   // mid-range vacuum reading (~2.5V)
