@@ -1,6 +1,6 @@
 //! WASM wrapper around [`imiev_bench::Simulation`].
 
-use imiev_bench::{firmware, CanFrame, Gear as BenchGear, RemoteBmu, Simulation};
+use imiev_bench::{firmware, CanFrame, Ecu, Gear as BenchGear, RemoteBmu, Simulation};
 use wasm_bindgen::prelude::*;
 
 const EV_ECU: &firmware::EvEcu = &firmware::EV_ECU_9499B13103;
@@ -90,39 +90,26 @@ impl Sim {
         self.inner.bus().ids().collect()
     }
 
-    pub fn bmu_peek(&self, addr: u32, size: u32) -> u32 {
-        self.inner.bmu().system().peek(addr, size)
-    }
-    pub fn ecu_peek(&self, addr: u32, size: u32) -> u32 {
-        self.inner.ev_ecu().system().peek(addr, size)
-    }
-
     pub fn ecu_op_mode(&self) -> u32 {
         self.inner.ecu_op_mode()
     }
-    pub fn ecu_mode_code(&self) -> u32 {
-        self.inner.ecu_mode_code()
+
+    pub fn ecu_torque_command(&self) -> f32 {
+        self.inner.ecu_torque_command()
     }
 
-    pub fn ecu_torque_request(&self) -> i32 {
-        self.inner.ecu_torque_request()
+    pub fn ecu_dtcs(&mut self) -> Vec<String> {
+        fmt_dtcs(&mut self.inner, Ecu::EvEcu)
     }
 
-    pub fn ecu_dtcs(&self) -> Vec<String> {
-        fmt_dtcs(self.inner.ecu_dtcs())
-    }
-
-    pub fn bmu_dtcs(&self) -> Vec<String> {
-        fmt_dtcs(self.inner.bmu_dtcs())
+    pub fn bmu_dtcs(&mut self) -> Vec<String> {
+        fmt_dtcs(&mut self.inner, Ecu::Bmu)
     }
 }
 
-fn fmt_dtcs(dtcs: Vec<(imiev_bench::dtc::Code, bool)>) -> Vec<String> {
-    dtcs.into_iter()
-        .map(|(code, confirmed)| {
-            format!("{code} ({})", if confirmed { "confirmed" } else { "pending" })
-        })
-        .collect()
+fn fmt_dtcs(sim: &mut Simulation, ecu: Ecu) -> Vec<String> {
+    sim.request_dtcs();
+    sim.last_dtcs(ecu).unwrap_or_default().iter().map(|d| d.to_string()).collect()
 }
 
 impl Default for Sim {
@@ -185,14 +172,14 @@ impl SplitEcu {
     pub fn ecu_op_mode(&self) -> u32 {
         self.inner.ecu_op_mode()
     }
-    pub fn ecu_mode_code(&self) -> u32 {
-        self.inner.ecu_mode_code()
+    pub fn ecu_torque_command(&self) -> f32 {
+        self.inner.ecu_torque_command()
     }
-    pub fn ecu_torque_request(&self) -> i32 {
-        self.inner.ecu_torque_request()
+    pub fn ecu_dtcs(&mut self) -> Vec<String> {
+        fmt_dtcs(&mut self.inner, Ecu::EvEcu)
     }
-    pub fn ecu_dtcs(&self) -> Vec<String> {
-        fmt_dtcs(self.inner.ecu_dtcs())
+    pub fn bmu_dtcs(&mut self) -> Vec<String> {
+        fmt_dtcs(&mut self.inner, Ecu::Bmu)
     }
 }
 
@@ -224,10 +211,6 @@ impl SplitBmu {
 
     pub fn receive(&mut self, frames: &[u8]) {
         self.inner.receive(&decode(frames));
-    }
-
-    pub fn bmu_dtcs(&self) -> Vec<String> {
-        fmt_dtcs(self.inner.dtcs())
     }
 }
 

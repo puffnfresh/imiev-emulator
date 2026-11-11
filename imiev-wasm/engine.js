@@ -34,9 +34,7 @@ export function startThreaded(onStatus, { limit = 0 } = {}) {
   const worker = (file) => new Worker(new URL(file, import.meta.url), { type: 'module' });
   const ecu = worker('./ecu-worker.js');
   const bmu = worker('./bmu-worker.js');
-  let bmuDtcs = [];
-  bmu.onmessage = ({ data }) => { bmuDtcs = data.bmuDtcs; };
-  ecu.onmessage = ({ data }) => onStatus({ ...data, bmuDtcs, threads: 2 });
+  ecu.onmessage = ({ data }) => onStatus({ ...data, threads: 2 });
   for (const w of [ecu, bmu]) {
     w.onerror = (e) => onStatus({ error: e.message ?? String(e) });
     w.postMessage({ sab });
@@ -58,8 +56,7 @@ export async function startSingle(onStatus) {
     onStatus({
       cycles,
       mode: sim.ecu_op_mode(),
-      modeCode: sim.ecu_mode_code(),
-      torque: sim.ecu_torque_request(),
+      torque: sim.ecu_torque_command(),
       frames: Object.fromEntries(WATCHED.map((id) => [id, sim.bus_last(id)])),
       ecuDtcs: sim.ecu_dtcs(),
       bmuDtcs: sim.bmu_dtcs(),

@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use mh8106f::System;
 
 mod adc;
-pub mod dtc;
 pub mod firmware;
-pub mod layout;
 mod parts;
 mod tester;
 
@@ -15,9 +13,7 @@ mod tester;
 mod tests;
 
 use adc::{BMU_BOOT_ADC, EV_ECU_BOOT_ADC};
-pub use dtc::DtcTable;
 pub use firmware::{Bmu, EvEcu};
-pub use layout::EvEcuLayout;
 pub use mh8106f::CanFrame;
 pub use parts::*;
 pub use imiev_capture::kwp::{Dtc, Ecu, Request};
@@ -31,6 +27,8 @@ const EV_ECU_FW: &[u8] = firmware::EV_ECU_9499A18206.image;
 const CAN_DLC_MAX: usize = 8;
 
 const BUS_PUMP_INTERVAL: u64 = 10_000;
+
+const ECU_STATUS_ID: u16 = 0x285;
 
 pub const CYCLES_PER_SECOND: u64 = 160_000_000;
 
@@ -174,8 +172,6 @@ pub struct Simulation {
     bus: CanBus,
     pump_every: u64,
     cycle: u64,
-    layout: EvEcuLayout,
-    bmu_dtc: DtcTable,
 }
 
 impl Simulation {
@@ -184,7 +180,6 @@ impl Simulation {
     }
 
     pub fn new(ev_ecu: &EvEcu, bmu: &Bmu) -> Simulation {
-        let layout = ev_ecu.layout;
         let ev_ecu = Node::new("EV-ECU", ev_ecu.image)
             .with_adc_env(EV_ECU_BOOT_ADC)
             .with_part(Box::new(Condenser::default()))
@@ -206,8 +201,6 @@ impl Simulation {
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
             cycle: 0,
-            layout,
-            bmu_dtc: bmu.dtc,
         }
     }
 
@@ -240,27 +233,24 @@ impl Simulation {
     }
 
     pub fn ecu_op_mode(&self) -> u32 {
-        self.ev_ecu.system().peek(self.layout.operating_mode, 1)
+        self.bus.last(ECU_STATUS_ID).map_or(0, |f| (f.data[2] & 0x0f) as u32)
     }
 
-    pub fn ecu_mode_code(&self) -> u32 {
-        self.ev_ecu.system().peek(self.layout.mode_status_code, 1)
+    pub fn ecu_torque_command(&self) -> f32 {
+        self.bus.last(ECU_STATUS_ID).map_or(0.0, |f| (u16::from_be_bytes([f.data[0], f.data[1]]) as f32 - 2000.0) / 10.0)
     }
 
-    pub fn ecu_torque_request(&self) -> i32 {
-        self.layout.torque_request.map_or(0, |a| self.ev_ecu.system().peek(a, 2) as i16 as i32)
+    pub fn ecu_dtcs(&mut self) -> Vec<String> {
+        self.dtc_labels(Ecu::EvEcu)
     }
 
-    pub fn ecu_dtcs(&self) -> Vec<(String, bool)> {
-        dtc::scan(self.ev_ecu.system(), &self.layout.dtc)
+    pub fn bmu_dtcs(&mut self) -> Vec<String> {
+        self.dtc_labels(Ecu::Bmu)
     }
 
-    pub fn bmu_dtcs(&self) -> Vec<(String, bool)> {
-        dtc::scan(self.bmu.system(), &self.bmu_dtc)
-    }
-
-    pub fn layout(&self) -> &EvEcuLayout {
-        &self.layout
+    fn dtc_labels(&mut self, ecu: Ecu) -> Vec<String> {
+        let dtcs = self.dtcs(ecu).unwrap_or_else(|| panic!("the {} did not answer a DTC read", ecu.name()));
+        dtcs.iter().map(Dtc::label).collect()
     }
 
     pub fn run(&mut self, steps: u64) {
@@ -365,7 +355,6 @@ pub struct RemoteBmu {
     node: Node,
     bus: CanBus,
     cycle: u64,
-    dtc: DtcTable,
 }
 
 impl RemoteBmu {
@@ -374,7 +363,7 @@ impl RemoteBmu {
     }
 
     pub fn new(bmu: &Bmu) -> RemoteBmu {
-        RemoteBmu { node: bmu_node(bmu), bus: CanBus::default(), cycle: 0, dtc: bmu.dtc }
+        RemoteBmu { node: bmu_node(bmu), bus: CanBus::default(), cycle: 0 }
     }
 
     pub fn run_to_pump(&mut self) {
@@ -405,9 +394,6 @@ impl RemoteBmu {
         &self.node
     }
 
-    pub fn dtcs(&self) -> Vec<(String, bool)> {
-        dtc::scan(self.node.system(), &self.dtc)
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -33,11 +33,7 @@
         <td id="op-mode" class="mono">—</td>
       </tr>
       <tr>
-        <th>Engage stage</th>
-        <td id="mode-code" class="mono">—</td>
-      </tr>
-      <tr>
-        <th>Torque request</th>
+        <th>Torque command</th>
         <td id="torque" class="mono">—</td>
       </tr>
       <tr>
@@ -113,8 +109,7 @@
     $('status').textContent = `running on ${threads} — ${s.cycles.toLocaleString()} steps`;
     $('op-mode').textContent = `${OP_MODES[s.mode] ?? '?'} (${s.mode})`;
     $('gear-box').disabled = s.mode !== OP_MODE_DRIVE;
-    $('mode-code').textContent = s.modeCode;
-    $('torque').textContent = s.torque;
+    $('torque').textContent = `${s.torque.toFixed(1)} Nm`;
     for (const id of [0x285, 0x288, 0x298, 0x373, 0x374, 0x375]) {
       $(`f${id.toString(16)}`).textContent = hex(s.frames[id]);
     }

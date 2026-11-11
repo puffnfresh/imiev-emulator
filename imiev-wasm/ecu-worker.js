@@ -17,10 +17,10 @@ self.onmessage = async ({ data: { sab } }) => {
   const status = () => ({
     cycles: pumps * PUMP_CYCLES,
     mode: car.ecu_op_mode(),
-    modeCode: car.ecu_mode_code(),
-    torque: car.ecu_torque_request(),
+    torque: car.ecu_torque_command(),
     frames: Object.fromEntries(WATCHED.map((id) => [id, car.bus_last(id)])),
     ecuDtcs: car.ecu_dtcs(),
+    bmuDtcs: car.bmu_dtcs(),
   });
 
   for (;;) {

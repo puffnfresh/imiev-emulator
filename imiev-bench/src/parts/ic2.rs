@@ -140,8 +140,6 @@ mod tests {
     use crate::adc::EV_ECU_BOOT_ADC;
     use crate::EV_ECU_FW;
 
-    const IC2_STARTUP_STATE: u32 = 0x0080_825a;
-
     #[test]
     fn ic2_handshake_completes_post() {
         let mut ecu = System::new(EV_ECU_FW);
@@ -150,18 +148,18 @@ mod tests {
         }
         let mut ic2 = Ic2Companion::default();
         let bus = CanBus::default();
-        for _ in 0..8_000_000u64 {
-            ecu.step();
-            ic2.update(&mut ecu, &bus);
-            if ecu.peek(IC2_STARTUP_STATE, 2) == 0xffff {
+        let mut status = false;
+        for _ in 0..1_600 {
+            for _ in 0..10_000 {
+                ecu.step();
+                ic2.update(&mut ecu, &bus);
+            }
+            status |= ecu.take_can0_tx().iter().any(|f| f.id == 0x285);
+            if status {
                 break;
             }
         }
-        assert_eq!(
-            ecu.peek(IC2_STARTUP_STATE, 2),
-            0xffff,
-            "IC2 handshake did not complete POST (startup_state != 0xFFFF)"
-        );
+        assert!(status, "the EV-ECU never finished POST: no status on 0x285");
     }
 
     fn read_all(bytes: &[u8]) -> Vec<Question> {

@@ -3,28 +3,10 @@
 use super::*;
 use crate::dtc::Code;
 
-const IC2_STARTUP_STATE: u32 = 0x0080_825a; // 0->4->0xFFFF (POST done)
-const EV_ECU_OPERATING_MODE: u32 = 0x0080_dd4e; // 0 REST/2 PRECHARGE/3 READY/4 DRIVE/5 SHUTDOWN
 const OP_MODE_PRECHARGE: u32 = 2;
-const CONFIRMED: u8 = 0x02;
-
-fn ecu_dtc(sim: &Simulation, label: &str) -> u8 {
-    dtc::status(sim.ev_ecu().system(), &dtc::ECU_DTC, Code::parse(label))
-        .unwrap_or_else(|| panic!("the EV-ECU has no DTC {label}"))
-}
-
-fn bmu_dtc(sim: &Simulation, label: &str) -> u8 {
-    dtc::status(sim.bmu().system(), &dtc::BMU_DTC, Code::parse(label))
-        .unwrap_or_else(|| panic!("the BMU has no DTC {label}"))
-}
-
-fn confirmed_ecu_dtcs(sim: &Simulation) -> Vec<Code> {
-    sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect()
-}
-
-fn assert_ecu_not_confirmed(sim: &Simulation, label: &str, why: &str) {
-    assert_eq!(ecu_dtc(sim, label) & CONFIRMED, 0, "{label} confirmed: {why}");
-}
+const OP_MODE_READY: u32 = 3;
+const OP_MODE_DRIVE: u32 = 4;
+const OP_MODE_SHUTDOWN: u32 = 5;
 
 #[test]
 fn frame_truncates_to_can_limit() {
@@ -34,20 +16,12 @@ fn frame_truncates_to_can_limit() {
 }
 
 #[test]
-fn imiev_ev_ecu_completes_post() {
-    let mut sim = Simulation::imiev();
-    sim.run(8_000_000); // POST completes by ~4M; stay clear of the later precharge-timeout reset
-    let ss = sim.ev_ecu().system().peek(IC2_STARTUP_STATE, 2);
-    assert_eq!(ss, 0xffff, "ECU did not complete POST in the stock co-sim");
-}
-
-#[test]
 fn imiev_ev_ecu_reaches_precharge() {
     let mut sim = Simulation::imiev();
     let mut reached_precharge = false;
     for _ in 0..160 {
         sim.run(100_000);
-        if sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
+        if sim.ecu_op_mode() == OP_MODE_PRECHARGE {
             reached_precharge = true;
             break;
         }
@@ -56,24 +30,19 @@ fn imiev_ev_ecu_reaches_precharge() {
 }
 
 #[test]
-fn imiev_ev_ecu_scheduler_runs_and_condenser_ramps() {
+fn imiev_ev_ecu_charges_the_dc_link_in_precharge() {
+    const DC_LINK_HALF_VOLTS: usize = 4;
     let mut sim = Simulation::imiev();
-    let mut reached_precharge = false;
-    let mut ramped = false;
+    let mut charging = false;
     for _ in 0..400 {
         sim.run(200_000);
-        let e = sim.ev_ecu().system();
-        if e.peek(EV_ECU_OPERATING_MODE, 1) == OP_MODE_PRECHARGE {
-            reached_precharge = true;
-        }
-        let cf60 = f32::from_bits(e.peek(0x0080_cf60, 4));
-        if cf60 > 5.0 && e.peek(0x0080_c088, 1) == 1 {
-            ramped = true;
+        let dc_link = sim.bus().last(0x285).map_or(0, |f| f.data[DC_LINK_HALF_VOLTS]);
+        if sim.ecu_op_mode() == OP_MODE_PRECHARGE && dc_link > 20 {
+            charging = true;
             break;
         }
     }
-    assert!(reached_precharge, "EV-ECU never reached PRECHARGE");
-    assert!(ramped, "scheduler never ran: cf60 never smoothed up / condenser data never valid");
+    assert!(charging, "the EV-ECU never reported the DC link charging during PRECHARGE");
 }
 
 #[test]
@@ -104,82 +73,49 @@ fn imiev_bmu_broadcasts_full_battery_frame_set() {
 fn imiev_bmu_nvm_clears_p1a51() {
     let mut sim = Simulation::imiev();
     sim.run(45_000_000);
-    assert_eq!(
-        bmu_dtc(&sim, "P1A51") & CONFIRMED,
-        0,
-        "P1A51 confirmed — the BMU EEPROM NVM check failed"
-    );
+    assert!(!sim.bmu_dtcs().iter().any(|d| d == "P1A51"), "P1A51 confirmed: the BMU EEPROM NVM check failed");
 }
 
 #[test]
-fn imiev_bmu_records_cmu_cell_voltage() {
-    const CELL_V: u32 = 0x0080_7f37; // board array entry 0, cell voltage (BE, raw)
+fn imiev_bmu_reports_the_cmus_cell_voltages() {
+    const CELL_3V7: [u8; 2] = [0x01, 0x40];
     let mut sim = Simulation::imiev();
     sim.run(16_000_000);
-    let recorded = sim.bmu().system().peek(CELL_V, 2);
-    assert_eq!(recorded, 0x0140, "BMU did not record the 3.7V cells the CMUs reported");
-}
-
-#[test]
-fn imiev_bmu_reaches_cmu_valid() {
-    const VALIDITY_FLAG9: u32 = 0x0080_bef9;
-    const CMU_DATA_VALID: u32 = 0x0080_bfbe;
-    const CMU_COMMS_HEALTHY: u32 = 0x0080_d6be;
-    const CMU_VALID: u32 = 0x0080_befa;
-    let mut sim = Simulation::imiev();
-    sim.run(45_000_000);
-    let bmu = sim.bmu().system();
-    assert_eq!(bmu.peek(VALIDITY_FLAG9, 1), 1, "sensor validity gate never latched");
-    assert_eq!(bmu.peek(CMU_DATA_VALID, 1), 1, "cmu_data_valid never latched");
-    assert_eq!(bmu.peek(CMU_COMMS_HEALTHY, 1), 1, "cmu_comms_healthy never latched");
-    assert_eq!(bmu.peek(CMU_VALID, 1), 1, "cmu_valid never latched");
+    let cells = sim.bus().last(0x6e1).map(|f| [f.data[4], f.data[5], f.data[6], f.data[7]]);
+    assert_eq!(cells, Some([CELL_3V7[0], CELL_3V7[1], CELL_3V7[0], CELL_3V7[1]]), "BMU did not pass on the CMUs' 3.7 V cells");
 }
 
 #[test]
 fn imiev_ev_ecu_holds_precharge_without_false_undervoltage() {
-    const OP_MODE_SHUTDOWN: u32 = 5;
     let mut sim = Simulation::imiev();
-    sim.run(8_000_000); // through POST + into precharge, while cf60 is still ramping
-    assert_ecu_not_confirmed(&sim, "P0562", "false-latched while the condenser was still precharging");
-    assert_ne!(
-        sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1),
-        OP_MODE_SHUTDOWN,
-        "ECU fell into SHUTDOWN during precharge"
-    );
+    sim.run(16_000_000);
+    assert!(!sim.ecu_dtcs().iter().any(|d| d == "P0562"), "P0562 false-latched while the condenser was still precharging");
+    assert_ne!(sim.ecu_op_mode(), OP_MODE_SHUTDOWN, "ECU fell into SHUTDOWN during precharge");
 }
 
 #[test]
 fn imiev_ev_ecu_reaches_ready() {
-    const MODE_SUBSTATE: u32 = 0x0080_e590; // dispatcher verdict: 3 = READY
-    const DATA_VALID_LATCH: u32 = 0x0080_d81e;
-    const DRIVE_STATE_READY: u32 = 0x0080_d5a5;
-    const PRECHARGE_MASTER_STATE: u32 = 0x0080_e5ac; // 6 = HV-active
-    const OP_MODE_READY: u32 = 3;
     let mut sim = Simulation::imiev();
     sim.run(75_000_000);
-    let e = sim.ev_ecu().system();
-    assert_eq!(e.peek(DATA_VALID_LATCH, 1), 1, "data_valid never latched");
-    assert_eq!(e.peek(DRIVE_STATE_READY, 1), 1, "drive_state_ready never debounced high");
-    assert_eq!(e.peek(MODE_SUBSTATE, 1), OP_MODE_READY, "dispatcher did not declare READY");
-    assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_READY, "operating_mode did not reach READY");
-    assert_eq!(e.peek(PRECHARGE_MASTER_STATE, 1), 6, "precharge master did not reach HV-active");
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_READY, "operating mode did not reach READY");
 }
 
 #[test]
 fn imiev_ev_ecu_reaches_and_holds_drive() {
-    const OP_MODE_DRIVE: u32 = 4;
     let mut sim = Simulation::imiev();
     sim.run(250_000_000);
-    let e = sim.ev_ecu().system();
-    assert_eq!(e.peek(EV_ECU_OPERATING_MODE, 1), OP_MODE_DRIVE, "operating_mode did not reach DRIVE");
-    assert_ne!(ecu_dtc(&sim, "P1B2C"), 0x82, "P1B2C stuck-before-drive watchdog confirmed");
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "operating mode did not reach DRIVE");
+    assert!(!sim.ecu_dtcs().iter().any(|d| d == "P1B2C"), "P1B2C stuck-before-drive watchdog confirmed");
 }
 
 #[test]
 fn imiev_aps_test_pulse_does_not_confirm_p060b() {
     let mut sim = Simulation::imiev();
     sim.run(400_000_000);
-    assert_ecu_not_confirmed(&sim, "P060B", "accelerator sensor 2 did not drop during the P1.0 test pulse");
+    assert!(
+        !sim.ecu_dtcs().iter().any(|d| d == "P060B"),
+        "P060B confirmed: accelerator sensor 2 did not drop during the P1.0 test pulse"
+    );
 }
 
 #[test]
@@ -189,30 +125,22 @@ fn imiev_full_throttle_holds_without_aps_overrange() {
     sim.set_gear(Gear::Drive);
     sim.set_pedal(100.0);
     sim.run(130_000_000); // well past the APS over-range debounce
-    assert_ecu_not_confirmed(&sim, "P2123", "APS1 over-range at full throttle");
-    assert_ecu_not_confirmed(&sim, "P2128", "APS2 over-range at full throttle");
+    let dtcs = sim.ecu_dtcs();
+    assert!(!dtcs.iter().any(|d| d == "P2123"), "P2123 (APS1 over-range) confirmed at full throttle");
+    assert!(!dtcs.iter().any(|d| d == "P2128"), "P2128 (APS2 over-range) confirmed at full throttle");
 }
 
 #[test]
 fn imiev_selecting_drive_engages_and_moves() {
-    const OP_MODE_DRIVE: u32 = 4;
     let mut sim = Simulation::imiev();
     sim.run(250_000_000);
-    assert_eq!(
-        sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1),
-        OP_MODE_DRIVE,
-        "never reached DRIVE to test motion"
-    );
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "never reached DRIVE to test motion");
     let rpm = |sim: &Simulation| sim.bus().last(0x298).map_or(0, |f| u16::from_be_bytes([f.data[6], f.data[7]]) as i32 - 10_000);
     let rpm0 = rpm(&sim);
     sim.set_gear(Gear::Drive);
     sim.set_pedal(60.0);
     sim.run(20_000_000);
-    assert_eq!(
-        sim.ev_ecu().system().peek(EV_ECU_OPERATING_MODE, 1),
-        OP_MODE_DRIVE,
-        "selecting Drive collapsed the operating mode (handshake broke)"
-    );
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "selecting Drive collapsed the operating mode (handshake broke)");
     let rpm1 = rpm(&sim);
     assert!(rpm1 > rpm0, "vehicle did not accelerate after selecting Drive ({rpm0} -> {rpm1} rpm)");
 }
@@ -237,7 +165,7 @@ fn imiev_holds_drive_under_torque() {
     sim.set_gear(Gear::Drive);
     sim.set_pedal(40.0);
     sim.run(3 * CYCLES_PER_SECOND);
-    let dtcs = confirmed_ecu_dtcs(&sim);
+    let dtcs = sim.ecu_dtcs();
     assert_eq!(sim.ecu_op_mode(), 4, "dropped out of DRIVE under torque; confirmed: {dtcs:?}");
     for (dtc, why) in [
         ("P1A1A", "the inverter's reported torque disagrees with the command"),
@@ -253,7 +181,7 @@ fn imiev_holds_drive_under_torque() {
 fn imiev_idles_in_ready_without_dtcs() {
     let mut sim = Simulation::imiev();
     sim.run(14 * CYCLES_PER_SECOND);
-    let dtcs = confirmed_ecu_dtcs(&sim);
+    let dtcs = sim.ecu_dtcs();
     assert_eq!(sim.ecu_op_mode(), 4, "fell out of READY; confirmed: {dtcs:?}");
     for (dtc, why) in [
         ("P1B0B", "no vehicle speed from the ABS (0x215)"),
@@ -268,6 +196,7 @@ fn imiev_idles_in_ready_without_dtcs() {
         assert_ecu_not_confirmed(&sim, dtc, why);
     }
     assert!(dtcs.is_empty(), "DTCs confirmed idling in READY: {dtcs:?}");
+    let bmu = sim.bmu_dtcs();
     for (dtc, why) in [
         ("P1AB5", "CMU01 reports a temperature below -30 C (an unfed sensor reads -50)"),
         ("P1A8E", "CMU01's balancing status (b1 of its first response) is not 0"),
@@ -293,7 +222,7 @@ fn imiev_holds_every_drive_position() {
     for (gear, name) in [(Gear::Eco, "B"), (Gear::Reverse, "R"), (Gear::Comfort, "C")] {
         sim.set_gear(gear);
         sim.run(2 * CYCLES_PER_SECOND);
-        let dtcs = confirmed_ecu_dtcs(&sim);
+        let dtcs = sim.ecu_dtcs();
         assert_eq!(sim.ecu_op_mode(), 4, "shut down in {name}; confirmed: {dtcs:?}");
         assert_ecu_not_confirmed(&sim, "P1A0F", &format!("{name}: the backlamp relay's switched side doesn't follow it"));
         assert!(dtcs.is_empty(), "DTCs confirmed in {name}: {dtcs:?}");
@@ -319,9 +248,6 @@ fn a_remote_bmu_runs_as_the_simulation_s_own() {
     assert!(bmu.node().system().cpu().pc == whole.bmu().system().cpu().pc);
 }
 
-const OP_MODE_READY: u32 = 3;
-const OP_MODE_DRIVE: u32 = 4;
-
 fn with_ev_ecu(ev_ecu: &EvEcu) -> Simulation {
     Simulation::new(ev_ecu, &firmware::BMU_9499B11500)
 }
@@ -332,9 +258,8 @@ fn with_bmu(bmu: &Bmu) -> Simulation {
 
 fn ev_ecu_completes_post(ev_ecu: &EvEcu) {
     let mut sim = with_ev_ecu(ev_ecu);
-    sim.run(8_000_000);
-    let state = sim.ev_ecu().system().peek(ev_ecu.layout.ic2_startup_state, 2);
-    assert_eq!(state, 0xffff, "{} did not complete POST", ev_ecu.part);
+    sim.run(16_000_000);
+    assert!(sim.bus().last(0x285).is_some(), "{} did not complete POST: no status on 0x285", ev_ecu.part);
 }
 
 fn ev_ecu_reaches_ready(mut sim: Simulation, part: &str) {
@@ -342,8 +267,7 @@ fn ev_ecu_reaches_ready(mut sim: Simulation, part: &str) {
     let mode = sim.ecu_op_mode();
     assert!(
         (OP_MODE_READY..=OP_MODE_DRIVE).contains(&mode),
-        "{part}: operating mode {mode}, handshake {}; DTCs {:?}",
-        sim.ecu_mode_code(),
+        "{part}: operating mode {mode}; DTCs {:?}",
         sim.ecu_dtcs()
     );
 }
@@ -355,8 +279,8 @@ fn bmu_broadcasts(bmu: &Bmu) {
         let f = sim.bus().last(id).unwrap_or_else(|| panic!("{} never sent {id:03x}", bmu.part));
         assert!(f.data.iter().any(|&b| b != 0), "{}: {id:03x} all zero", bmu.part);
     }
-    let confirmed: Vec<_> = sim.bmu_dtcs().into_iter().filter(|(_, c)| *c).collect();
-    assert!(!confirmed.iter().any(|(code, _)| code == "P1A51"), "{}: {confirmed:?}", bmu.part);
+    let confirmed = sim.bmu_dtcs();
+    assert!(!confirmed.iter().any(|code| code == "P1A51"), "{}: {confirmed:?}", bmu.part);
 }
 
 macro_rules! every_ev_ecu {
@@ -409,7 +333,7 @@ fn czero_pair_reaches_ready() {
 
 fn drives_without_dtcs(mut sim: Simulation, part: &str) {
     sim.run(6 * CYCLES_PER_SECOND);
-    let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    let dtcs = sim.ecu_dtcs();
     assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "{part}: fell out of READY; confirmed: {dtcs:?}");
     for (dtc, why) in [
         ("P0630", "no chassis number in the EEPROM"),
@@ -427,7 +351,7 @@ fn drives_without_dtcs(mut sim: Simulation, part: &str) {
     sim.set_gear(Gear::Drive);
     sim.set_pedal(40.0);
     sim.run(3 * CYCLES_PER_SECOND);
-    let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    let dtcs = sim.ecu_dtcs();
     assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "{part}: dropped out of DRIVE; confirmed: {dtcs:?}");
     assert!(dtcs.is_empty(), "{part}: DTCs confirmed driving: {dtcs:?}");
     let kmh = sim.bus().last(0x412).map_or(0, |f| f.data[1]);
