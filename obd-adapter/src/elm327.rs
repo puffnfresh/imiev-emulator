@@ -266,6 +266,10 @@ impl<T: Transport> CanAdapter for Elm327<T> {
         self.transport.now_us()
     }
 
+    fn keeps_up_with_bursts(&self) -> bool {
+        false
+    }
+
     fn skipped_bytes(&self) -> u64 {
         self.skipped
     }

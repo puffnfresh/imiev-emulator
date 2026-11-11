@@ -27,6 +27,7 @@ pub trait CanAdapter {
     fn recv(&mut self, timeout_ms: u32) -> impl Future<Output = Result<Vec<Event>, String>>;
     fn filter(&mut self, _id: Option<u32>) {}
     fn now_us(&self) -> u64;
+    fn keeps_up_with_bursts(&self) -> bool;
     fn skipped_bytes(&self) -> u64 {
         0
     }

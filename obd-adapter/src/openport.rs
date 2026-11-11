@@ -211,6 +211,10 @@ impl<T: Transport> CanAdapter for OpenPort<T> {
         self.transport.now_us()
     }
 
+    fn keeps_up_with_bursts(&self) -> bool {
+        true
+    }
+
     fn skipped_bytes(&self) -> u64 {
         self.parser.skipped
     }

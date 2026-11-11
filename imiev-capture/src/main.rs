@@ -83,6 +83,13 @@ impl CanAdapter for Adapter {
         }
     }
 
+    fn keeps_up_with_bursts(&self) -> bool {
+        match self {
+            Adapter::OpenPort(a) => a.keeps_up_with_bursts(),
+            Adapter::Elm(a) => a.keeps_up_with_bursts(),
+        }
+    }
+
     fn skipped_bytes(&self) -> u64 {
         match self {
             Adapter::OpenPort(a) => a.skipped_bytes(),
@@ -168,7 +175,7 @@ enum Cmd {
     },
     /// List the actuator tests; never runs one [default: EV-ECU and BMU].
     Actuators(EcuArgs),
-    /// Read an ECU's 1 MB of memory into DIR (resumable).
+    /// Read an ECU's 1 MB of memory into DIR (resumable); not over ELM327.
     Dump(DumpArgs),
 }
 
@@ -470,15 +477,17 @@ impl DumpFile {
     }
 }
 
+fn dump_paths(args: &DumpArgs) -> (String, String, String) {
+    let prefix = format!("{}/{}", args.dir, args.ecu.name());
+    (format!("{prefix}-identification.txt"), format!("{prefix}.bin.part"), format!("{prefix}.bin"))
+}
+
 async fn dump_memory(args: DumpArgs) -> Result<(), String> {
-    let DumpArgs { ecu, ref dir, ref log, session, .. } = args;
-    let prefix = format!("{dir}/{}", ecu.name());
-    let (id_path, part_path, bin_path) =
-        (format!("{prefix}-identification.txt"), format!("{prefix}.bin.part"), format!("{prefix}.bin"));
+    let (_, _, bin_path) = dump_paths(&args);
     if std::fs::exists(&bin_path).unwrap_or(false) {
         return Err(format!("{bin_path} already exists"));
     }
-    let log_out: Box<dyn Write> = match log {
+    let log_out: Box<dyn Write> = match &args.log {
         Some(path) => Box::new(BufWriter::new(File::create(path).map_err(|e| format!("{path}: {e}"))?)),
         None => Box::new(io::sink()),
     };
@@ -487,6 +496,15 @@ async fn dump_memory(args: DumpArgs) -> Result<(), String> {
     let flag = stop.clone();
     ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)).map_err(|e| e.to_string())?;
 
+    with_logged_bus(log_out, async |bus| dump_through(bus, &args, &stop).await).await
+}
+
+async fn dump_through(bus: &mut UsbBus, args: &DumpArgs, stop: &AtomicBool) -> Result<(), String> {
+    if !bus.port.keeps_up_with_bursts() {
+        return Err(format!("dump needs an adapter that keeps up with memory reads, such as the OpenPort, not the {}", bus.adapter));
+    }
+    let &DumpArgs { ecu, session, .. } = args;
+    let (id_path, part_path, bin_path) = dump_paths(args);
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -502,31 +520,28 @@ async fn dump_memory(args: DumpArgs) -> Result<(), String> {
     }
     let mut out = DumpFile { file, path: part_path.clone() };
 
-    with_logged_bus(log_out, async |bus| {
-        bus.expect(ecu, Request::OpenSession).await?;
+    bus.expect(ecu, Request::OpenSession).await?;
 
-        let mut id = format!("{} identification\n", ecu.name());
-        for (label, line) in bus.identification(ecu).await? {
-            id += &format!("{label}: {line}\n");
-        }
-        eprint!("{id}");
-        std::fs::write(&id_path, id).map_err(|e| format!("{id_path}: {e}"))?;
+    let mut id = format!("{} identification\n", ecu.name());
+    for (label, line) in bus.identification(ecu).await? {
+        id += &format!("{label}: {line}\n");
+    }
+    eprint!("{id}");
+    std::fs::write(&id_path, id).map_err(|e| format!("{id_path}: {e}"))?;
 
-        if session == 0x85 {
-            bus.expect(ecu, Request::OpenProgrammingSession).await?;
-            eprintln!("in programming session 85");
+    if session == 0x85 {
+        bus.expect(ecu, Request::OpenProgrammingSession).await?;
+        eprintln!("in programming session 85");
+    }
+    bus.timeout_us = DUMP_TIMEOUT_US;
+    let read = read_memory(bus, args, &mut out, stop, &mut address).await;
+    if session == 0x85 {
+        match bus.request(ecu, Request::CloseSession).await {
+            Ok(pdu) => eprintln!("back to the default session: {}", hex(&pdu)),
+            Err(e) => eprintln!("leaving session 85: {e}; turn the key off and on to reset the ECU"),
         }
-        bus.timeout_us = DUMP_TIMEOUT_US;
-        let read = read_memory(bus, &args, &mut out, &stop, &mut address).await;
-        if session == 0x85 {
-            match bus.request(ecu, Request::CloseSession).await {
-                Ok(pdu) => eprintln!("back to the default session: {}", hex(&pdu)),
-                Err(e) => eprintln!("leaving session 85: {e}; turn the key off and on to reset the ECU"),
-            }
-        }
-        read
-    })
-    .await?;
+    }
+    read?;
 
     if address < kwp::MEMORY_SIZE {
         eprintln!("read up to 0x{address:05X}; run dump again to carry on");
