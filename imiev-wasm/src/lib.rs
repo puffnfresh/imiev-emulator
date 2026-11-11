@@ -1,7 +1,10 @@
 //! WASM wrapper around [`imiev_bench::Simulation`].
 
-use imiev_bench::{CanFrame, Gear as BenchGear, RemoteBmu, Simulation};
+use imiev_bench::{firmware, CanFrame, Gear as BenchGear, RemoteBmu, Simulation};
 use wasm_bindgen::prelude::*;
+
+const EV_ECU: &firmware::EvEcu = &firmware::EV_ECU_9499B13103;
+const BMU: &firmware::Bmu = &firmware::BMU_9499B11500;
 
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
@@ -36,7 +39,7 @@ pub struct Sim {
 impl Sim {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Sim {
-        Sim { inner: Simulation::imiev() }
+        Sim { inner: Simulation::new(EV_ECU, BMU) }
     }
 
     pub fn run(&mut self, steps: u32) {
@@ -156,7 +159,7 @@ pub struct SplitEcu {
 impl SplitEcu {
     #[wasm_bindgen(constructor)]
     pub fn new() -> SplitEcu {
-        SplitEcu { inner: Simulation::imiev() }
+        SplitEcu { inner: Simulation::new(EV_ECU, BMU) }
     }
 
     pub fn run_to_pump(&mut self) {
@@ -208,7 +211,7 @@ pub struct SplitBmu {
 impl SplitBmu {
     #[wasm_bindgen(constructor)]
     pub fn new() -> SplitBmu {
-        SplitBmu { inner: RemoteBmu::imiev() }
+        SplitBmu { inner: RemoteBmu::new(BMU) }
     }
 
     pub fn run_to_pump(&mut self) {
