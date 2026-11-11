@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusb::{Context, DeviceHandle, Direction, TransferType, UsbContext};
 
-use crate::openport::{Transport, PRODUCT_ID, VENDOR_ID};
+use crate::openport::{PRODUCT_ID, VENDOR_ID};
+use crate::Transport;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -47,7 +48,7 @@ impl Usb {
         };
 
         let handle = device.open().map_err(|e| {
-            format!("opening adapter: {e} (needs a udev rule for {VENDOR_ID:04x}:{PRODUCT_ID:04x}; see README)")
+            format!("opening adapter: {e} (needs a udev rule for {VENDOR_ID:04x}:{PRODUCT_ID:04x})")
         })?;
         for i in [0, iface] {
             if handle.kernel_driver_active(i).unwrap_or(false) {

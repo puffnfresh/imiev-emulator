@@ -2,7 +2,7 @@
 
 use embedded_can::Frame as _;
 
-use crate::can;
+use crate::{can, CanAdapter, Event, Transport};
 
 pub const VENDOR_ID: u16 = 0x0403;
 pub const PRODUCT_ID: u16 = 0xcc4d;
@@ -130,22 +130,17 @@ fn can_frame(payload: &[u8]) -> Option<can::Frame> {
     can::Frame::from_raw_id(u32::from_be_bytes(*id), data)
 }
 
-pub trait Transport {
-    fn write(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), String>>;
-    fn read(&mut self, timeout_ms: u32) -> impl Future<Output = Result<Vec<u8>, String>>;
-    fn now_us(&self) -> u64;
-}
-
 const REPLY_TIMEOUT_US: u64 = 2_000_000;
 
 pub struct OpenPort<T> {
     transport: T,
     parser: Parser,
+    clock: Option<Clock>,
 }
 
 impl<T: Transport> OpenPort<T> {
     pub async fn open_can(transport: T) -> Result<(OpenPort<T>, String), String> {
-        let mut port = OpenPort { transport, parser: Parser::default() };
+        let mut port = OpenPort { transport, parser: Parser::default(), clock: None };
         let id = port.command(Command::Identify).await?;
         port.command(Command::Attach).await?;
         port.command(Command::OpenCan).await?;
@@ -154,16 +149,11 @@ impl<T: Transport> OpenPort<T> {
     }
 
     pub async fn identify(transport: T) -> Result<String, String> {
-        let mut port = OpenPort { transport, parser: Parser::default() };
+        let mut port = OpenPort { transport, parser: Parser::default(), clock: None };
         let id = port.command(Command::Identify).await?;
         port.command(Command::Attach).await?;
         port.command(Command::Detach).await?;
         Ok(id)
-    }
-
-    pub async fn close(&mut self) {
-        let _ = self.command(Command::CloseCan).await;
-        let _ = self.command(Command::Detach).await;
     }
 
     async fn command(&mut self, cmd: Command) -> Result<String, String> {
@@ -184,11 +174,6 @@ impl<T: Transport> OpenPort<T> {
         Err(format!("{cmd:?}: no `{}` reply within {}s", cmd.ack(), REPLY_TIMEOUT_US / 1_000_000))
     }
 
-    pub async fn transmit(&mut self, frame: can::Frame) -> Result<(), String> {
-        let cmd = Command::Transmit(frame);
-        self.transport.write(&cmd.bytes()).await.map_err(|e| format!("{cmd:?}: write failed: {e}"))
-    }
-
     pub async fn read(&mut self, timeout_ms: u32) -> Result<Vec<Reply>, String> {
         let bytes = self.transport.read(timeout_ms).await?;
         self.parser.push(&bytes);
@@ -198,24 +183,56 @@ impl<T: Transport> OpenPort<T> {
     pub fn now_us(&self) -> u64 {
         self.transport.now_us()
     }
+}
 
-    pub fn skipped_bytes(&self) -> u64 {
+impl<T: Transport> CanAdapter for OpenPort<T> {
+    async fn send(&mut self, frame: can::Frame) -> Result<(), String> {
+        let cmd = Command::Transmit(frame);
+        self.transport.write(&cmd.bytes()).await.map_err(|e| format!("{cmd:?}: write failed: {e}"))
+    }
+
+    async fn recv(&mut self, timeout_ms: u32) -> Result<Vec<Event>, String> {
+        let replies = self.read(timeout_ms).await?;
+        let now = self.now_us();
+        Ok(replies
+            .into_iter()
+            .map(|reply| match reply {
+                Reply::Received { timestamp_us, frame } => {
+                    let clock = self.clock.get_or_insert_with(|| Clock::new(now));
+                    Event::Frame { time_us: clock.wall_us(timestamp_us), frame }
+                }
+                Reply::Text(line) if line.starts_with("are") => Event::Warning(format!("adapter error: {line}")),
+                _ => Event::Other,
+            })
+            .collect())
+    }
+
+    fn now_us(&self) -> u64 {
+        self.transport.now_us()
+    }
+
+    fn skipped_bytes(&self) -> u64 {
         self.parser.skipped
+    }
+
+    async fn close(&mut self) {
+        let _ = self.command(Command::CloseCan).await;
+        let _ = self.command(Command::Detach).await;
     }
 }
 
-pub struct Clock {
+struct Clock {
     anchor_us: u64,
     last: Option<u32>,
     elapsed_us: u64,
 }
 
 impl Clock {
-    pub fn new(anchor_us: u64) -> Clock {
+    fn new(anchor_us: u64) -> Clock {
         Clock { anchor_us, last: None, elapsed_us: 0 }
     }
 
-    pub fn wall_us(&mut self, adapter_ts: u32) -> u64 {
+    fn wall_us(&mut self, adapter_ts: u32) -> u64 {
         if let Some(last) = self.last {
             self.elapsed_us += u64::from(adapter_ts.wrapping_sub(last));
         }
@@ -243,9 +260,9 @@ mod tests {
         assert_eq!(Command::OpenCan.bytes(), b"ato5 0 500000 0\r\n");
         assert_eq!(Command::PassAll.bytes(), b"atf5 1 0 4\r\n\0\0\0\0\0\0\0\0");
         assert_eq!(Command::CloseCan.bytes(), b"atc5\r\n");
-        let clear = crate::kwp::Request::ClearDtcs.frame(crate::kwp::Ecu::EvEcu).unwrap();
+        let clear = can::Frame::standard(0x751, &[0x03, 0x14, 0xff, 0x00, 0, 0, 0, 0]).unwrap();
         assert_eq!(
-            Command::Transmit(clear.can()).bytes(),
+            Command::Transmit(clear).bytes(),
             b"att5 12 0\r\n\x00\x00\x07\x51\x03\x14\xff\x00\x00\x00\x00\x00"
         );
         assert_eq!(Command::Detach.bytes(), b"atz\r\n");
@@ -311,6 +328,54 @@ mod tests {
         p.push(b"ar5\x02aro\r\n");
         assert_eq!(p.next_reply(), Some(Reply::Text("aro".into())));
         assert_eq!(p.skipped, 4);
+    }
+
+    struct Fake {
+        heard: Vec<u8>,
+        pending: Vec<u8>,
+        now_us: u64,
+    }
+
+    impl Transport for Fake {
+        async fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            let ack: &[u8] = match bytes.trim_ascii_start() {
+                b if b.starts_with(b"ati") => b"ari fake\r\n",
+                b if b.starts_with(b"atf") => b"arf\r\n",
+                _ => b"aro\r\n",
+            };
+            self.pending.extend_from_slice(ack);
+            Ok(())
+        }
+
+        async fn read(&mut self, _timeout_ms: u32) -> Result<Vec<u8>, String> {
+            self.pending.append(&mut self.heard);
+            Ok(std::mem::take(&mut self.pending))
+        }
+
+        fn now_us(&self) -> u64 {
+            self.now_us
+        }
+    }
+
+    #[test]
+    fn heard_as_events_on_the_program_clock() {
+        let mut heard = can_reply(1_000, 0x373, &[1]);
+        heard.extend_from_slice(b"are 7\r\narx\r\n");
+        heard.extend(can_reply(1_250, 0x374, &[2]));
+        let fake = Fake { heard: Vec::new(), pending: Vec::new(), now_us: 5_000_000 };
+        let (mut port, id) = pollster::block_on(OpenPort::open_can(fake)).unwrap();
+        assert_eq!(id, "ari fake");
+        port.transport.heard = heard;
+        let frame = |id, data| can::Frame::standard(id, data).unwrap();
+        assert_eq!(
+            pollster::block_on(port.recv(10)).unwrap(),
+            [
+                Event::Frame { time_us: 5_000_000, frame: frame(0x373, &[1]) },
+                Event::Warning("adapter error: are 7".into()),
+                Event::Other,
+                Event::Frame { time_us: 5_000_250, frame: frame(0x374, &[2]) },
+            ]
+        );
     }
 
     #[test]

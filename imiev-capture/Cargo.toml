@@ -7,7 +7,7 @@ edition = "2024"
 default = ["cli"]
 # The command-line tool and its libusb transport. The library builds without it
 # for Android and wasm32.
-cli = ["dep:rusb", "dep:ctrlc", "dep:pollster", "dep:clap"]
+cli = ["obd-adapter/usb", "dep:ctrlc", "dep:pollster", "dep:clap"]
 
 [[bin]]
 name = "imiev-capture"
@@ -16,7 +16,7 @@ required-features = ["cli"]
 [dependencies]
 automotive_diag = { version = "0.1", default-features = false, features = ["kwp2000"] }
 embedded-can = "0.4"
-rusb = { version = "0.9", optional = true }
+obd-adapter = { path = "../obd-adapter" }
 ctrlc = { version = "3", optional = true }
 pollster = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }

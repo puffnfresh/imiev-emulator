@@ -7,45 +7,40 @@ use embedded_can::Frame as _;
 
 use crate::can;
 use crate::kwp::{self, describe, Dtc, Ecu, IsoTpRx, Request, Rx, IDENTIFICATION};
-use crate::openport::{Clock, OpenPort, Reply, Transport};
+use obd_adapter::{CanAdapter, Event};
 
 pub const KWP_TIMEOUT_US: u64 = 500_000;
 
-pub struct Bus<T> {
-    pub port: OpenPort<T>,
+pub struct Bus<A> {
+    pub port: A,
     pub adapter: String,
     out: Box<dyn Write>,
     iface: String,
     warn: Box<dyn FnMut(&str)>,
-    clock: Option<Clock>,
     pub per_id: BTreeMap<u32, u64>,
     pub other: u64,
     pub timeout_us: u64,
     pub lost: bool,
 }
 
-impl<T: Transport> Bus<T> {
-    pub async fn open(transport: T, out: Box<dyn Write>, iface: &str, warn: Box<dyn FnMut(&str)>) -> Result<Bus<T>, String> {
-        let (port, adapter) = OpenPort::open_can(transport).await?;
-        Ok(Bus {
+impl<A: CanAdapter> Bus<A> {
+    pub fn new(port: A, adapter: String, out: Box<dyn Write>, iface: &str, warn: Box<dyn FnMut(&str)>) -> Bus<A> {
+        Bus {
             port,
             adapter,
             out,
             iface: iface.into(),
             warn,
-            clock: None,
             per_id: BTreeMap::new(),
             other: 0,
             timeout_us: KWP_TIMEOUT_US,
             lost: false,
-        })
+        }
     }
 
-    pub async fn reattach(&mut self, transport: T) -> Result<(), String> {
-        (self.port, self.adapter) = OpenPort::open_can(transport).await?;
-        self.clock = None;
+    pub fn reattach(&mut self, port: A, adapter: String) {
+        (self.port, self.adapter) = (port, adapter);
         self.lost = false;
-        Ok(())
     }
 
     pub async fn close(&mut self) {
@@ -55,19 +50,17 @@ impl<T: Transport> Bus<T> {
 
     pub async fn poll(&mut self, timeout_ms: u32) -> Result<Vec<can::Frame>, String> {
         let mut frames = Vec::new();
-        let replies = self.port.read(timeout_ms).await.inspect_err(|_| self.lost = true)?;
-        for reply in replies {
-            match reply {
-                Reply::Received { timestamp_us, frame } => {
-                    let now = self.port.now_us();
-                    let clock = self.clock.get_or_insert_with(|| Clock::new(now));
-                    let line = can::candump_line(&frame, clock.wall_us(timestamp_us), &self.iface);
+        let events = self.port.recv(timeout_ms).await.inspect_err(|_| self.lost = true)?;
+        for event in events {
+            match event {
+                Event::Frame { time_us, frame } => {
+                    let line = can::candump_line(&frame, time_us, &self.iface);
                     writeln!(self.out, "{line}").map_err(|e| e.to_string())?;
                     *self.per_id.entry(can::raw_id(frame.id())).or_default() += 1;
                     frames.push(frame);
                 }
-                Reply::Text(line) if line.starts_with("are") => (self.warn)(&format!("adapter error: {line}")),
-                _ => self.other += 1,
+                Event::Warning(warning) => (self.warn)(&warning),
+                Event::Other => self.other += 1,
             }
         }
         self.out.flush().map_err(|e| e.to_string())?;
@@ -76,7 +69,7 @@ impl<T: Transport> Bus<T> {
 
     async fn send(&mut self, ecu: Ecu, req: Request) -> Result<(), String> {
         let frame = req.frame(ecu).ok_or(format!("{req:?} to the {} is not an allowed request", ecu.name()))?.can();
-        self.port.transmit(frame).await.inspect_err(|_| self.lost = true)?;
+        self.port.send(frame).await.inspect_err(|_| self.lost = true)?;
         let line = can::candump_line(&frame, self.port.now_us(), &self.iface);
         writeln!(self.out, "{line}").map_err(|e| e.to_string())
     }
@@ -155,6 +148,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
+    use obd_adapter::openport::OpenPort;
+    use obd_adapter::Transport;
+
     use super::*;
 
     type Sent = Rc<RefCell<Vec<Vec<u8>>>>;
@@ -209,11 +205,11 @@ mod tests {
         }
     }
 
-    fn bus(script: Vec<(Vec<u8>, Vec<Vec<u8>>)>) -> (Bus<FakeAdapter>, Sent) {
+    fn bus(script: Vec<(Vec<u8>, Vec<Vec<u8>>)>) -> (Bus<OpenPort<FakeAdapter>>, Sent) {
         let sent = Sent::default();
         let fake = FakeAdapter { script, pending: VecDeque::new(), sent: Rc::clone(&sent), now: Cell::new(0) };
-        let bus = pollster::block_on(Bus::open(fake, Box::new(std::io::sink()), "can0", Box::new(|_| {}))).unwrap();
-        (bus, sent)
+        let (port, adapter) = pollster::block_on(OpenPort::open_can(fake)).unwrap();
+        (Bus::new(port, adapter, Box::new(std::io::sink()), "can0", Box::new(|_| {})), sent)
     }
 
     #[test]

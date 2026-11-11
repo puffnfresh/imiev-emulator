@@ -209,8 +209,8 @@ dependencies = [
  "clap",
  "ctrlc",
  "embedded-can",
+ "obd-adapter",
  "pollster",
- "rusb",
 ]
 
 [[package]]
@@ -272,6 +272,15 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "obd-adapter"
+version = "0.1.0"
+dependencies = [
+ "embedded-can",
+ "pollster",
+ "rusb",
 ]
 
 [[package]]

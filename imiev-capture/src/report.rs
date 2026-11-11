@@ -3,7 +3,7 @@
 use crate::bus::Bus;
 use crate::item::{self, Item, Variant};
 use crate::kwp::{self, describe, hex, Dtc, Ecu, Request};
-use crate::openport::Transport;
+use obd_adapter::CanAdapter;
 
 pub fn ecus(name: &str) -> Result<Vec<Ecu>, String> {
     match name {
@@ -12,7 +12,7 @@ pub fn ecus(name: &str) -> Result<Vec<Ecu>, String> {
     }
 }
 
-pub async fn info<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu]) -> String {
+pub async fn info<A: CanAdapter>(bus: &mut Bus<A>, ecus: &[Ecu]) -> String {
     let mut text = String::new();
     for &ecu in ecus {
         text += &format!("{}:\n", ecu.name());
@@ -24,7 +24,7 @@ pub async fn info<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu]) -> String {
     text
 }
 
-pub async fn dtcs<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu]) -> String {
+pub async fn dtcs<A: CanAdapter>(bus: &mut Bus<A>, ecus: &[Ecu]) -> String {
     let mut text = String::new();
     for &ecu in ecus {
         text += &dtc_lines(bus, ecu, "stored").await.unwrap_or_else(|e| format!("{}: {e}\n", ecu.name()));
@@ -32,7 +32,7 @@ pub async fn dtcs<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu]) -> String {
     text
 }
 
-pub async fn clear<T: Transport>(bus: &mut Bus<T>, ecu: Ecu) -> Result<String, String> {
+pub async fn clear<A: CanAdapter>(bus: &mut Bus<A>, ecu: Ecu) -> Result<String, String> {
     if !ecu.can_clear() {
         return Err(format!("can't clear the {}'s DTCs", ecu.name()));
     }
@@ -44,7 +44,7 @@ pub async fn clear<T: Transport>(bus: &mut Bus<T>, ecu: Ecu) -> Result<String, S
     Ok(text + &dtc_lines(bus, ecu, "after").await.unwrap_or_else(|e| format!("{}: {e}\n", ecu.name())))
 }
 
-pub async fn dtc_lines<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, label: &str) -> Result<String, String> {
+pub async fn dtc_lines<A: CanAdapter>(bus: &mut Bus<A>, ecu: Ecu, label: &str) -> Result<String, String> {
     let dtcs = bus.dtcs(ecu).await?;
     if dtcs.is_empty() {
         return Ok(format!("{} {label}: no DTCs\n", ecu.name()));
@@ -63,7 +63,7 @@ pub async fn dtc_lines<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, label: &str) ->
     Ok(text)
 }
 
-async fn freeze_frame<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, dtc: Dtc, variant: Option<&Variant>) -> Result<String, String> {
+async fn freeze_frame<A: CanAdapter>(bus: &mut Bus<A>, ecu: Ecu, dtc: Dtc, variant: Option<&Variant>) -> Result<String, String> {
     let pdu = bus.ask(ecu, Request::ReadDtcRecord(dtc.code)).await?;
     Ok(match (kwp::parse_dtc_record(dtc.code, &pdu), variant) {
         (None, _) => format!("  freeze frame: {} refused ReadDtcRecord: {}\n", ecu.name(), describe(&pdu)),
@@ -82,7 +82,7 @@ async fn freeze_frame<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, dtc: Dtc, varian
     })
 }
 
-pub async fn data<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu], all: bool) -> String {
+pub async fn data<A: CanAdapter>(bus: &mut Bus<A>, ecus: &[Ecu], all: bool) -> String {
     let mut text = String::new();
     for &ecu in ecus {
         text += &records(bus, ecu, all).await.unwrap_or_else(|e| format!("{}: {e}\n", ecu.name()));
@@ -90,7 +90,7 @@ pub async fn data<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu], all: bool) -> St
     text
 }
 
-pub async fn records<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, all: bool) -> Result<String, String> {
+pub async fn records<A: CanAdapter>(bus: &mut Bus<A>, ecu: Ecu, all: bool) -> Result<String, String> {
     let mut text = format!("{}:\n", ecu.name());
     let variant = variant(bus, ecu, &mut text).await;
     let lids: Vec<u8> = match variant {
@@ -121,7 +121,7 @@ pub async fn records<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, all: bool) -> Res
     Ok(text)
 }
 
-pub async fn actuators<T: Transport>(bus: &mut Bus<T>, ecus: &[Ecu]) -> String {
+pub async fn actuators<A: CanAdapter>(bus: &mut Bus<A>, ecus: &[Ecu]) -> String {
     let mut text = String::new();
     for &ecu in ecus {
         let mut note = String::new();
@@ -141,7 +141,7 @@ fn items(items: impl Iterator<Item = &'static Item>, pdu: &[u8]) -> String {
     items.filter_map(|item| Some(format!("    {}: {}\n", item.name, item.value(pdu)?))).collect()
 }
 
-async fn variant<T: Transport>(bus: &mut Bus<T>, ecu: Ecu, text: &mut String) -> Option<&'static Variant> {
+async fn variant<A: CanAdapter>(bus: &mut Bus<A>, ecu: Ecu, text: &mut String) -> Option<&'static Variant> {
     if !item::covers(ecu) {
         return None;
     }

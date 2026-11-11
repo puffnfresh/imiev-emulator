@@ -11,14 +11,15 @@ use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{value_parser, Args, Parser, Subcommand, ValueEnum};
 use imiev_capture::bus::Bus;
 use imiev_capture::kwp::{self, describe, hex, Ecu, Request, EV_ECU_RECORDS};
-use imiev_capture::openport::{OpenPort, CAN_BAUD};
 use imiev_capture::report;
-use imiev_capture::usb::Usb;
+use obd_adapter::openport::{OpenPort, CAN_BAUD};
+use obd_adapter::usb::Usb;
+use obd_adapter::CanAdapter;
 
 const DUMP_TIMEOUT_US: u64 = 1_000_000;
 const DUMP_ATTEMPTS: u32 = 3;
 
-type UsbBus = Bus<Usb>;
+type UsbBus = Bus<OpenPort<Usb>>;
 
 #[derive(Parser)]
 struct Cli {
@@ -145,9 +146,9 @@ impl ValueEnum for EcuChoice {
 }
 
 async fn open_bus(out: Box<dyn Write>, iface: &str) -> Result<UsbBus, String> {
-    let bus = Bus::open(Usb::open()?, out, iface, Box::new(|w| eprintln!("{w}"))).await?;
-    eprintln!("{}", bus.adapter);
-    Ok(bus)
+    let (port, adapter) = OpenPort::open_can(Usb::open()?).await?;
+    eprintln!("{adapter}");
+    Ok(Bus::new(port, adapter, out, iface, Box::new(|w| eprintln!("{w}"))))
 }
 
 async fn log(args: LogArgs) -> Result<(), String> {
@@ -205,11 +206,12 @@ async fn reconnect(bus: &mut UsbBus, running: &impl Fn() -> bool) {
     while running() {
         std::thread::sleep(Duration::from_millis(250));
         let attached = match Usb::open() {
-            Ok(usb) => bus.reattach(usb).await,
+            Ok(usb) => OpenPort::open_can(usb).await,
             Err(e) => Err(e),
         };
         match attached {
-            Ok(()) => {
+            Ok((port, adapter)) => {
+                bus.reattach(port, adapter);
                 eprintln!("adapter back after {:.1}s", lost_at.elapsed().as_secs_f64());
                 return;
             }

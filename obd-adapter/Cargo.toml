@@ -1,0 +1,15 @@
+[package]
+name = "obd-adapter"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# libusb access to the adapters, for desktop programs.
+usb = ["dep:rusb"]
+
+[dependencies]
+embedded-can = "0.4"
+rusb = { version = "0.9", optional = true }
+
+[dev-dependencies]
+pollster = "1"
