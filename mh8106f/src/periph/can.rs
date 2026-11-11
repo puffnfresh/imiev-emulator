@@ -11,6 +11,8 @@ const SLOT_CTRL_END: u32 = SLOT_CTRL_BASE + NUM_SLOTS;
 const SLOT_BASE: u32 = 0x100; // slot n at base + SLOT_BASE + n*SLOT_STRIDE
 const SLOT_STRIDE: u32 = 0x10;
 pub const NUM_SLOTS: u32 = 32;
+const LMSKA: u32 = 0x30;
+const LMSKB: u32 = 0x38;
 
 // Slot-control byte bits (MSB-first labelling -> these byte values).
 const TR: u8 = 0x80; // transmit request
@@ -76,16 +78,35 @@ impl CanModule {
         (SLOT_BASE + slot * SLOT_STRIDE + field) as usize
     }
 
+    fn acceptance_mask(&self, slot: u32) -> u16 {
+        match slot {
+            30 => decode_sid(self.regs[LMSKA as usize], self.regs[LMSKA as usize + 1]),
+            31 => decode_sid(self.regs[LMSKB as usize], self.regs[LMSKB as usize + 1]),
+            _ => 0x7ff,
+        }
+    }
+
+    fn accepts(&self, slot: u32, id: u16) -> bool {
+        let ctrl = self.regs[(SLOT_CTRL_BASE + slot) as usize];
+        let base = self.slot_field(slot, 0);
+        let want = decode_sid(self.regs[base + SLOT_SID0 as usize], self.regs[base + SLOT_SID1 as usize]);
+        let mask = self.acceptance_mask(slot);
+        ctrl & RR != 0 && (want ^ id) & mask == 0
+    }
+
     pub fn deliver_rx(&mut self, id: u16, data: &[u8]) -> Option<u16> {
-        let (sid0, sid1) = encode_sid(id);
-        let slot = (0..NUM_SLOTS).find(|&slot| {
-            let ctrl = self.regs[(SLOT_CTRL_BASE + slot) as usize];
-            let base = self.slot_field(slot, 0);
-            ctrl & RR != 0
-                && self.regs[base + SLOT_SID0 as usize] == sid0
-                && self.regs[base + SLOT_SID1 as usize] == sid1
-        })?;
-        self.write_rx_slot(slot, id, data);
+        let pending = be_read(&self.regs, SLIST as usize, 4);
+        let accepting = (0..NUM_SLOTS).filter(|&slot| self.accepts(slot, id));
+        let mut first = None;
+        let mut free = None;
+        for slot in accepting {
+            first.get_or_insert(slot);
+            if pending & (0x8000_0000u32 >> slot) == 0 {
+                free = Some(slot);
+                break;
+            }
+        }
+        self.write_rx_slot(free.or(first)?, id, data);
         Some(self.rx_ivect)
     }
 
@@ -236,6 +257,26 @@ mod tests {
             can.read(base + SLIST, 4) & (0x8000_0000u32 >> slot),
             0x8000_0000u32 >> slot
         );
+    }
+
+    #[test]
+    fn slots_30_and_31_accept_through_their_local_masks() {
+        let base = 0x0080_1000;
+        let mut can = CanModule::new(base, 0x0000);
+        for (mask, slot) in [(LMSKA, 30u32), (LMSKB, 31)] {
+            can.write(base + mask, 1, 0x0d);
+            can.write(base + mask + 1, 1, 0x3e);
+            let (s0, s1) = encode_sid(0x591);
+            can.write(slot_field(base, slot, SLOT_SID0), 1, s0 as u32);
+            can.write(slot_field(base, slot, SLOT_SID1), 1, s1 as u32);
+            can.write(slot_ctrl(base, slot), 1, RR as u32);
+        }
+        assert_eq!(can.deliver_rx(0x112, &[0]), None);
+        assert!(can.deliver_rx(0x111, &[1]).is_some());
+        let s30 = slot_field(base, 30, 0);
+        assert_eq!(decode_sid(can.read(s30 + SLOT_SID0, 1) as u8, can.read(s30 + SLOT_SID1, 1) as u8), 0x111);
+        assert!(can.deliver_rx(0x110, &[2]).is_some());
+        assert_eq!(can.read(slot_field(base, 31, SLOT_DATA0), 1), 2);
     }
 
     #[test]
