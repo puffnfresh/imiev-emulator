@@ -9,6 +9,7 @@ pub mod dtc;
 pub mod firmware;
 pub mod layout;
 mod parts;
+mod tester;
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,8 @@ pub use firmware::{Bmu, EvEcu};
 pub use layout::EvEcuLayout;
 pub use mh8106f::CanFrame;
 pub use parts::*;
+pub use imiev_capture::kwp::{Dtc, Ecu, Request};
+use tester::Tester;
 
 #[cfg(test)]
 const BMU_FW: &[u8] = firmware::BMU_9499B11500.image;
@@ -167,6 +170,7 @@ pub struct Simulation {
     driver: DriverControls,
     sources: Vec<Box<dyn BusSource>>,
     inverter: Inverter,
+    tester: Tester,
     bus: CanBus,
     pump_every: u64,
     cycle: u64,
@@ -198,6 +202,7 @@ impl Simulation {
             driver: DriverControls::default(),
             sources: vec![Box::new(Vehicle), Box::new(Etacs::new(BENCH_VIN)), Box::new(SteeringAngleSensor::default())],
             inverter: Inverter::default(),
+            tester: Tester::default(),
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
             cycle: 0,
@@ -265,6 +270,34 @@ impl Simulation {
         });
     }
 
+    pub fn ask(&mut self, ecu: Ecu, request: Request) -> Option<Vec<u8>> {
+        self.tester.ask(ecu, request);
+        loop {
+            self.run(self.pump_every - self.cycle % self.pump_every);
+            if let Some(answer) = self.tester.take_answer(ecu, request) {
+                return answer;
+            }
+        }
+    }
+
+    pub fn dtcs(&mut self, ecu: Ecu) -> Option<Vec<Dtc>> {
+        self.ask(ecu, Request::ReadDtcs).and_then(|pdu| imiev_capture::kwp::parse_dtcs(&pdu))
+    }
+
+    pub fn request_dtcs(&mut self) {
+        if !self.tester.busy() {
+            self.tester.ask(Ecu::EvEcu, Request::ReadDtcs);
+            self.tester.ask(Ecu::Bmu, Request::ReadDtcs);
+        }
+        while self.tester.take_answer(Ecu::EvEcu, Request::ReadDtcs).is_some()
+            || self.tester.take_answer(Ecu::Bmu, Request::ReadDtcs).is_some()
+        {}
+    }
+
+    pub fn last_dtcs(&self, ecu: Ecu) -> Option<&[Dtc]> {
+        self.tester.last_dtcs(ecu)
+    }
+
     pub fn warm_bmu(&mut self, steps: u64) {
         self.run_chunks(steps, |sim, n| sim.bmu.run_steps(n, &sim.bus));
     }
@@ -289,7 +322,7 @@ impl Simulation {
     }
 
     fn pump_ev_ecu(&mut self, bmu_tx: Vec<CanFrame>) -> Vec<CanFrame> {
-        let Simulation { ev_ecu, driver, sources, inverter, bus, .. } = self;
+        let Simulation { ev_ecu, driver, sources, inverter, tester, bus, .. } = self;
         let mut tx = bmu_tx;
         tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
@@ -298,6 +331,8 @@ impl Simulation {
         inverter.hv_connected = dclink_connected(ev_ecu.system());
         inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);
         tx.extend(inverter.frames(bus));
+        let asked = tester.exchange(&tx);
+        tx.extend(asked);
         for f in &tx {
             bus.record(*f);
             ev_ecu.deliver(f);

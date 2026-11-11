@@ -8,3 +8,5 @@ path = "src/lib.rs"
 
 [dependencies]
 mh8106f = { path = "../mh8106f" }
+imiev-capture = { path = "../imiev-capture", default-features = false }
+embedded-can = "0.4"
