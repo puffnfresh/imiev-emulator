@@ -1,7 +1,11 @@
 //! Car diagnostic adapters
 
 pub mod can;
+pub mod elm327;
 pub mod openport;
+#[cfg(all(feature = "serial", target_os = "linux"))]
+pub mod serial;
+pub mod trace;
 #[cfg(feature = "usb")]
 pub mod usb;
 
@@ -21,6 +25,7 @@ pub enum Event {
 pub trait CanAdapter {
     fn send(&mut self, frame: can::Frame) -> impl Future<Output = Result<(), String>>;
     fn recv(&mut self, timeout_ms: u32) -> impl Future<Output = Result<Vec<Event>, String>>;
+    fn filter(&mut self, _id: Option<u32>) {}
     fn now_us(&self) -> u64;
     fn skipped_bytes(&self) -> u64 {
         0

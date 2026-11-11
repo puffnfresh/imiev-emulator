@@ -84,6 +84,7 @@ impl<A: CanAdapter> Bus<A> {
     }
 
     pub async fn request(&mut self, ecu: Ecu, req: Request) -> Result<Vec<u8>, String> {
+        self.port.filter(Some(ecu.response_id().into()));
         self.send(ecu, req).await?;
         let mut rx = IsoTpRx::default();
         let mut deadline = self.port.now_us() + self.timeout_us;

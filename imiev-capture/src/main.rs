@@ -1,10 +1,10 @@
 //! Program to capture and dump i-MiEV information available using Tactrix
-//! OpenPort 2.0 clones.
+//! OpenPort 2.0 clones or ELM327 adapters.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
@@ -12,19 +12,127 @@ use clap::{value_parser, Args, Parser, Subcommand, ValueEnum};
 use imiev_capture::bus::Bus;
 use imiev_capture::kwp::{self, describe, hex, Ecu, Request, EV_ECU_RECORDS};
 use imiev_capture::report;
+use obd_adapter::elm327::{self, Elm327};
 use obd_adapter::openport::{OpenPort, CAN_BAUD};
+use obd_adapter::serial::{self, Serial};
+use obd_adapter::trace::{Show, Trace};
 use obd_adapter::usb::Usb;
-use obd_adapter::CanAdapter;
+use obd_adapter::{can, CanAdapter, Event};
 
 const DUMP_TIMEOUT_US: u64 = 1_000_000;
 const DUMP_ATTEMPTS: u32 = 3;
 
-type UsbBus = Bus<OpenPort<Usb>>;
+const ELM_BAUDS: [u32; 5] = [38400, 9600, 115200, 230400, 500000];
+
+type UsbBus = Bus<Adapter>;
 
 #[derive(Parser)]
 struct Cli {
+    #[command(flatten)]
+    elm: ElmArgs,
     #[command(subcommand)]
     command: Cmd,
+}
+
+#[derive(Args, Clone)]
+struct ElmArgs {
+    /// Use an ELM327 adapter instead of the OpenPort: a serial device
+    /// (/dev/ttyUSB0, /dev/rfcomm0), a paired Bluetooth address, or a TCP
+    /// host:port (WiFi adapters are usually 192.168.0.10:35000).
+    #[arg(long, global = true, value_name = "DEVICE")]
+    elm: Option<String>,
+    /// The ELM327's serial speed [default: tries 38400, 9600, 115200, 230400, 500000].
+    #[arg(long, global = true, requires = "elm")]
+    baud: Option<u32>,
+}
+
+static ELM: OnceLock<ElmArgs> = OnceLock::new();
+
+/// Whichever adapter `--elm` picked.
+enum Adapter {
+    OpenPort(OpenPort<Usb>),
+    Elm(Elm327<Trace<Serial>>),
+}
+
+impl CanAdapter for Adapter {
+    async fn send(&mut self, frame: can::Frame) -> Result<(), String> {
+        match self {
+            Adapter::OpenPort(a) => a.send(frame).await,
+            Adapter::Elm(a) => a.send(frame).await,
+        }
+    }
+
+    async fn recv(&mut self, timeout_ms: u32) -> Result<Vec<Event>, String> {
+        match self {
+            Adapter::OpenPort(a) => a.recv(timeout_ms).await,
+            Adapter::Elm(a) => a.recv(timeout_ms).await,
+        }
+    }
+
+    fn filter(&mut self, id: Option<u32>) {
+        match self {
+            Adapter::OpenPort(a) => a.filter(id),
+            Adapter::Elm(a) => a.filter(id),
+        }
+    }
+
+    fn now_us(&self) -> u64 {
+        match self {
+            Adapter::OpenPort(a) => a.now_us(),
+            Adapter::Elm(a) => a.now_us(),
+        }
+    }
+
+    fn skipped_bytes(&self) -> u64 {
+        match self {
+            Adapter::OpenPort(a) => a.skipped_bytes(),
+            Adapter::Elm(a) => a.skipped_bytes(),
+        }
+    }
+
+    async fn close(&mut self) {
+        match self {
+            Adapter::OpenPort(a) => a.close().await,
+            Adapter::Elm(a) => a.close().await,
+        }
+    }
+}
+
+async fn open_adapter() -> Result<(Adapter, String), String> {
+    let ElmArgs { elm, baud } = ELM.get().expect("set in main");
+    let Some(device) = elm else {
+        let (port, id) = OpenPort::open_can(Usb::open()?).await?;
+        return Ok((Adapter::OpenPort(port), id));
+    };
+    let serial = if serial::bluetooth_address(device).is_some() {
+        Serial::bluetooth(device)?
+    } else if !device.starts_with('/') && device.contains(':') {
+        Serial::tcp(device)?
+    } else if let Some(baud) = baud {
+        Serial::open(device, *baud)?
+    } else {
+        find_speed(device).await?
+    };
+    let (elm, id) = Elm327::open_can(trace(serial)).await?;
+    Ok((Adapter::Elm(elm), id))
+}
+
+fn trace(serial: Serial) -> Trace<Serial> {
+    let show: Option<Show> = match std::env::var_os("IMIEV_TRACE") {
+        Some(_) => Some(Box::new(|line| eprintln!("{line}"))),
+        None => None,
+    };
+    Trace::new(serial, show)
+}
+
+async fn find_speed(device: &str) -> Result<Serial, String> {
+    for baud in ELM_BAUDS {
+        let mut serial = trace(Serial::open(device, baud)?);
+        if elm327::probe(&mut serial).await? {
+            return Serial::open(device, baud);
+        }
+    }
+    Err(format!("no ELM327 answered on {device} at {ELM_BAUDS:?} baud; try --baud"))
 }
 
 #[derive(Subcommand)]
@@ -65,8 +173,10 @@ enum Cmd {
 }
 
 fn main() {
+    let cli = Cli::parse();
+    ELM.set(cli.elm).ok();
     let result = pollster::block_on(async {
-        match Cli::parse().command {
+        match cli.command {
             Cmd::Identify => identify().await,
             Cmd::Sniff(args) => log(args).await,
             Cmd::Log { args, lids } => log(LogArgs { lids: lids.unwrap_or(EV_ECU_RECORDS.to_vec()), ..args }).await,
@@ -85,7 +195,13 @@ fn main() {
 }
 
 async fn identify() -> Result<(), String> {
-    println!("{}", OpenPort::identify(Usb::open()?).await?);
+    if ELM.get().is_some_and(|e| e.elm.is_some()) {
+        let (mut adapter, id) = open_adapter().await?;
+        adapter.close().await;
+        println!("{id}");
+    } else {
+        println!("{}", OpenPort::identify(Usb::open()?).await?);
+    }
     Ok(())
 }
 
@@ -146,7 +262,7 @@ impl ValueEnum for EcuChoice {
 }
 
 async fn open_bus(out: Box<dyn Write>, iface: &str) -> Result<UsbBus, String> {
-    let (port, adapter) = OpenPort::open_can(Usb::open()?).await?;
+    let (port, adapter) = open_adapter().await?;
     eprintln!("{adapter}");
     Ok(Bus::new(port, adapter, out, iface, Box::new(|w| eprintln!("{w}"))))
 }
@@ -205,11 +321,7 @@ async fn reconnect(bus: &mut UsbBus, running: &impl Fn() -> bool) {
     eprintln!("adapter lost; reconnecting");
     while running() {
         std::thread::sleep(Duration::from_millis(250));
-        let attached = match Usb::open() {
-            Ok(usb) => OpenPort::open_can(usb).await,
-            Err(e) => Err(e),
-        };
-        match attached {
+        match open_adapter().await {
             Ok((port, adapter)) => {
                 bus.reattach(port, adapter);
                 eprintln!("adapter back after {:.1}s", lost_at.elapsed().as_secs_f64());

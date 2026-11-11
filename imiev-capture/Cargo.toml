@@ -5,9 +5,7 @@ edition = "2024"
 
 [features]
 default = ["cli"]
-# The command-line tool and its libusb transport. The library builds without it
-# for Android and wasm32.
-cli = ["obd-adapter/usb", "dep:ctrlc", "dep:pollster", "dep:clap"]
+cli = ["obd-adapter/usb", "obd-adapter/serial", "dep:ctrlc", "dep:pollster", "dep:clap"]
 
 [[bin]]
 name = "imiev-capture"

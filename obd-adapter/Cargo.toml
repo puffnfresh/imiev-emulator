@@ -6,10 +6,12 @@ edition = "2024"
 [features]
 # libusb access to the adapters, for desktop programs.
 usb = ["dep:rusb"]
+serial = ["dep:libc"]
 
 [dependencies]
 embedded-can = "0.4"
 rusb = { version = "0.9", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 pollster = "1"
