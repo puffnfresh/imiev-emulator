@@ -212,6 +212,11 @@ impl<T: Transport> CanAdapter for Elm327<T> {
         self.apply_filter().await?;
         if self.header != Some(id.as_raw()) {
             self.setting(&format!("ATSH{:03X}", id.as_raw()), true).await?;
+            self.setting(&format!("ATFCSH{:03X}", id.as_raw()), true).await?;
+            if self.header.is_none() {
+                self.setting("ATFCSD300000", true).await?;
+                self.setting("ATFCSM1", true).await?;
+            }
             self.header = Some(id.as_raw());
         }
         let data: String = payload.iter().map(|b| format!("{b:02X}")).collect();
@@ -417,6 +422,8 @@ mod tests {
         let set: Vec<&String> =
             commands.iter().filter(|c| ["ATCAF", "ATCRA", "ATSH"].iter().any(|p| c.starts_with(p))).collect();
         assert_eq!(set, ["ATCAF1", "ATCRA752", "ATSH751"]);
+        let flow: Vec<&String> = commands.iter().filter(|c| c.starts_with("ATFC")).collect();
+        assert_eq!(flow, ["ATFCSH751", "ATFCSD300000", "ATFCSM1"]);
         assert_eq!(commands.iter().filter(|c| *c == "1800FF00").count(), 2);
     }
 
@@ -450,8 +457,8 @@ mod tests {
         pollster::block_on(elm.send(frame(0x751, &[0x02, 0x10, 0x92, 0, 0, 0, 0, 0]))).unwrap();
         assert!(!elm.monitoring);
         let commands = &elm.transport.commands;
-        let tail: Vec<&str> = commands[commands.len() - 7..].iter().map(String::as_str).collect();
-        assert_eq!(tail, ["ATCAF0", "ATAR", "ATMA", "", "ATCAF1", "ATSH751", "1092"]);
+        let tail: Vec<&str> = commands[commands.len() - 10..].iter().map(String::as_str).collect();
+        assert_eq!(tail, ["ATCAF0", "ATAR", "ATMA", "", "ATCAF1", "ATSH751", "ATFCSH751", "ATFCSD300000", "ATFCSM1", "1092"]);
         assert_eq!(pollster::block_on(elm.recv(10)).unwrap(), [Event::Other, Event::Other]);
     }
 
