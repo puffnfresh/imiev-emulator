@@ -407,6 +407,43 @@ fn czero_pair_reaches_ready() {
     ev_ecu_reaches_ready(sim, "C-Zero pair");
 }
 
+fn drives_without_dtcs(mut sim: Simulation, part: &str) {
+    sim.run(6 * CYCLES_PER_SECOND);
+    let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "{part}: fell out of READY; confirmed: {dtcs:?}");
+    for (dtc, why) in [
+        ("P0630", "no chassis number in the EEPROM"),
+        ("P1B2E", "no key code registered over 0x591"),
+        ("U1117", "the ETACS never answered the immobiliser's challenge"),
+        ("P1B1B", "no brake-stroke sensor supply on ADC channel 14"),
+        ("P1B32", "no chassis number from the ETACS on 0x29a"),
+        ("P1B35", "no steering angle on 0x236"),
+    ] {
+        assert!(!dtcs.iter().any(|d| d == dtc), "{part}: {dtc}: {why}");
+    }
+    assert!(dtcs.is_empty(), "{part}: DTCs confirmed idling: {dtcs:?}");
+    assert_eq!(sim.bus().last(0x101).map(|f| f.data[0]), Some(0x04), "{part}: immobiliser not unlocked");
+
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(40.0);
+    sim.run(3 * CYCLES_PER_SECOND);
+    let dtcs: Vec<String> = sim.ecu_dtcs().into_iter().filter(|d| d.1).map(|d| d.0).collect();
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "{part}: dropped out of DRIVE; confirmed: {dtcs:?}");
+    assert!(dtcs.is_empty(), "{part}: DTCs confirmed driving: {dtcs:?}");
+    let kmh = sim.bus().last(0x412).map_or(0, |f| f.data[1]);
+    assert!(kmh >= 5, "{part}: only {kmh} km/h after 3 s at 40% pedal");
+}
+
+#[test]
+fn czero_pair_drives_without_dtcs() {
+    drives_without_dtcs(Simulation::new(&firmware::EV_ECU_9499A43902, &firmware::BMU_9499A84200), "C-Zero pair");
+}
+
+#[test]
+fn ev_ecu_9499b13103_drives_without_dtcs() {
+    drives_without_dtcs(with_ev_ecu(&firmware::EV_ECU_9499B13103), "9499B13103");
+}
+
 #[test]
 fn every_build_is_in_the_registry() {
     let mut parts: Vec<&str> = firmware::EV_ECUS.iter().map(|b| b.part).chain(firmware::BMUS.iter().map(|b| b.part)).collect();
