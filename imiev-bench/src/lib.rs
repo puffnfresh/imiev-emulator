@@ -31,6 +31,8 @@ const BUS_PUMP_INTERVAL: u64 = 10_000;
 
 pub const CYCLES_PER_SECOND: u64 = 160_000_000;
 
+pub const BENCH_VIN: &[u8; 17] = b"IMIEVBENCH0000001";
+
 
 pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     let mut buf = [0u8; CAN_DLC_MAX];
@@ -188,7 +190,8 @@ impl Simulation {
             .with_part(Box::new(AirbagEcu::default()))
             .with_part(Box::new(Charger))
             .with_part(Box::new(BacklampRelay))
-            .with_local_part(Box::new(Ic2Companion::default()));
+            .with_local_part(Box::new(Ic2Companion::default()))
+            .with_local_part(Box::new(Eeprom::ev_ecu(BENCH_VIN)));
         Simulation {
             bmu: bmu_node(bmu),
             ev_ecu,

@@ -40,10 +40,38 @@ pub struct Eeprom {
     out_idx: u32, // 0 => dummy leading 0; 1..=16 => data bit index
 }
 
+const BLOCK_A: (usize, usize) = (0, 16);
+const BLOCK_B: (usize, usize) = (16, 64);
+const BLOCK_C1: (usize, usize) = (64, 512);
+const BLOCK_C2: (usize, usize) = (512, 1024);
+const BLOCKS: [(usize, usize); 4] = [BLOCK_A, BLOCK_B, BLOCK_C1, BLOCK_C2];
+
+fn crc32(bytes: impl Iterator<Item = u8>) -> u32 {
+    !bytes.fold(!0u32, |mut crc, b| {
+        crc ^= (b as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04c1_1db7 } else { crc << 1 };
+        }
+        crc
+    })
+}
+
+fn seal(store: &mut [u16; NWORDS], (first, end): (usize, usize)) {
+    let crc = crc32(store[first..end - 2].iter().flat_map(|w| w.to_be_bytes()));
+    store[end - 2] = (crc >> 16) as u16;
+    store[end - 1] = crc as u16;
+}
+
 impl Default for Eeprom {
     fn default() -> Self {
+        Self::with_image(Self::initial_image())
+    }
+}
+
+impl Eeprom {
+    fn with_image(store: [u16; NWORDS]) -> Self {
         Eeprom {
-            store: Self::initial_image(),
+            store,
             prev_cs: false,
             prev_sk: false,
             do_bit: false,
@@ -59,20 +87,24 @@ impl Default for Eeprom {
             out_idx: 0,
         }
     }
-}
 
-impl Eeprom {
-    /// A valid, CRC-consistent NVM image.
+    pub fn ev_ecu(vin: &[u8; 17]) -> Self {
+        let mut s = Self::initial_image();
+        let mut block = [0u8; 2 * (BLOCK_B.1 - BLOCK_B.0)];
+        block[..17].copy_from_slice(vin);
+        block[17..34].copy_from_slice(vin);
+        for (w, b) in s[BLOCK_B.0..BLOCK_B.1].iter_mut().zip(block.chunks(2)) {
+            *w = u16::from_be_bytes([b[0], b[1]]);
+        }
+        seal(&mut s, BLOCK_B);
+        Self::with_image(s)
+    }
+
     fn initial_image() -> [u16; NWORDS] {
         let mut s = [0u16; NWORDS];
-        s[14] = 0x97ee;
-        s[15] = 0x0e01; // Block A CRC32
-        s[62] = 0xe764;
-        s[63] = 0xad43; // Block B CRC32
-        s[510] = 0x1c76;
-        s[511] = 0xc138; // Block C1 CRC32
-        s[1022] = 0x61f5;
-        s[1023] = 0xdde6; // Block C2 CRC32
+        for block in BLOCKS {
+            seal(&mut s, block);
+        }
         s
     }
 
@@ -187,5 +219,19 @@ impl Part for Eeprom {
         self.prev_sk = sk;
 
         chip.set_gpio_input(P7DATA, DO, if self.do_bit { DO } else { 0 });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_image_carries_the_firmware_s_crcs() {
+        let s = Eeprom::initial_image();
+        assert_eq!([s[14], s[15]], [0x97ee, 0x0e01]);
+        assert_eq!([s[62], s[63]], [0xe764, 0xad43]);
+        assert_eq!([s[510], s[511]], [0x1c76, 0xc138]);
+        assert_eq!([s[1022], s[1023]], [0x61f5, 0xdde6]);
     }
 }
