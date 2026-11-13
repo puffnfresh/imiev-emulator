@@ -88,6 +88,17 @@ impl System {
     pub fn peek(&self, addr: u32, size: u32) -> u32 {
         self.mem.peek(addr, size)
     }
+    pub fn reset(&mut self) {
+        let flash = self.flash().to_vec();
+        let ram = core::mem::take(&mut self.mem.ram);
+        *self = System::new(&flash);
+        self.mem.ram = ram;
+    }
+
+    pub fn flash(&self) -> &[u8] {
+        &self.mem.flash
+    }
+
     pub fn timer(&self) -> &Timer {
         &self.mem.timer
     }

@@ -25,9 +25,9 @@ const SLOW_TICK_REQ: u8 = 0x10;
 const FLASH_ERASED: u8 = 0xff;
 
 pub(crate) struct Machine {
-    flash: Vec<u8>,
+    pub(crate) flash: Vec<u8>,
     /// Backs the `0x800000..0x814000` span (SFR scratch + internal RAM).
-    ram: Vec<u8>,
+    pub(crate) ram: Vec<u8>,
     pub timer: Timer,
     pub icu: Icu,
     pub adc: Adc,
