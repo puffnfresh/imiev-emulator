@@ -495,3 +495,16 @@ fn plugging_in_wakes_the_ev_ecu_to_charge() {
     assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
     assert!(dclink_connected(sim.ev_ecu().system()), "charging without the contactors closed");
 }
+
+#[test]
+fn the_charger_keeps_the_ev_ecu_charging() {
+    let mut sim = Simulation::imiev();
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(12 * CYCLES_PER_SECOND);
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
+    let status = sim.bus().last(0x389).expect("the charger never reported on 0x389").data;
+    assert_eq!(status[1], 244, "mains volts");
+    let dtcs = sim.ecu_dtcs();
+    assert!(dtcs.is_empty(), "DTCs confirmed charging: {dtcs:?}");
+}
