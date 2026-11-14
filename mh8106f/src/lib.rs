@@ -110,6 +110,10 @@ impl System {
         self.mem.gpio.output(addr)
     }
 
+    pub fn gpio_driven(&self, addr: u32) -> u8 {
+        self.mem.gpio.driven(addr)
+    }
+
     pub fn gpio_level(&self, addr: u32) -> u8 {
         self.mem.gpio.pin_level(addr)
     }

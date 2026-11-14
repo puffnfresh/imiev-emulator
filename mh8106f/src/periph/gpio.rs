@@ -3,12 +3,14 @@
 use super::Peripheral;
 
 pub const PORT_BASE: u32 = 0x0080_0700;
+const DIR_BASE: u32 = 0x0080_0720; // PxDIR: 1 = output
 const NUM_PORTS: usize = 0x18;
 
 pub struct Gpio {
     out: [u8; NUM_PORTS],     // firmware output latch, per port
     in_mask: [u8; NUM_PORTS], // bits an external part drives (1 = input)
     in_val: [u8; NUM_PORTS],  // the level those input bits present
+    dir: [u8; NUM_PORTS],     // PxDIR, as the firmware last wrote it
 }
 
 impl Default for Gpio {
@@ -23,12 +25,19 @@ impl Gpio {
             out: [0; NUM_PORTS],
             in_mask: [0; NUM_PORTS],
             in_val: [0; NUM_PORTS],
+            dir: [0; NUM_PORTS],
         }
     }
 
     #[inline]
     fn index(addr: u32) -> Option<usize> {
         let i = addr.checked_sub(PORT_BASE)? as usize;
+        (i < NUM_PORTS).then_some(i)
+    }
+
+    #[inline]
+    fn dir_index(addr: u32) -> Option<usize> {
+        let i = addr.checked_sub(DIR_BASE)? as usize;
         (i < NUM_PORTS).then_some(i)
     }
 
@@ -43,6 +52,10 @@ impl Gpio {
         Self::index(addr).map_or(0, |i| self.out[i])
     }
 
+    pub fn driven(&self, addr: u32) -> u8 {
+        Self::index(addr).map_or(0, |i| self.out[i] & self.dir[i])
+    }
+
     pub fn pin_level(&self, addr: u32) -> u8 {
         Self::index(addr).map_or(0, |i| self.level(i))
     }
@@ -54,13 +67,17 @@ impl Gpio {
 
 impl Peripheral for Gpio {
     fn handles(&self, a: u32) -> bool {
-        Self::index(a).is_some()
+        Self::index(a).is_some() || Self::dir_index(a).is_some()
     }
 
     fn read(&mut self, a: u32, size: u32) -> u32 {
         let mut v = 0u32;
         for k in 0..size {
-            let byte = Self::index(a + k).map_or(0, |i| self.level(i));
+            let byte = match (Self::index(a + k), Self::dir_index(a + k)) {
+                (Some(i), _) => self.level(i),
+                (_, Some(i)) => self.dir[i],
+                _ => 0,
+            };
             v = (v << 8) | byte as u32;
         }
         v
@@ -68,9 +85,11 @@ impl Peripheral for Gpio {
 
     fn write(&mut self, a: u32, size: u32, val: u32) {
         for k in 0..size {
+            let byte = (val >> (8 * (size - 1 - k))) as u8;
             if let Some(i) = Self::index(a + k) {
-                let shift = 8 * (size - 1 - k);
-                self.out[i] = (val >> shift) as u8;
+                self.out[i] = byte;
+            } else if let Some(i) = Self::dir_index(a + k) {
+                self.dir[i] = byte;
             }
         }
     }
@@ -82,6 +101,16 @@ mod tests {
 
     const P7DATA: u32 = 0x0080_0707;
     const P9DATA: u32 = 0x0080_0709;
+
+    #[test]
+    fn a_pin_drives_only_as_an_output() {
+        let mut g = Gpio::new();
+        g.write(P7DATA, 1, 0x90);
+        assert_eq!(g.driven(P7DATA), 0);
+        g.write(P7DATA + 0x20, 1, 0x10);
+        assert_eq!(g.read(P7DATA + 0x20, 1), 0x10);
+        assert_eq!(g.driven(P7DATA), 0x10);
+    }
 
     #[test]
     fn output_latch_reads_back() {
