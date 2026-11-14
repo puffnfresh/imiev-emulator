@@ -336,6 +336,7 @@ impl Simulation {
             tx.extend(remote.frames(bus));
         }
         inverter.hv_connected = dclink_connected(ev_ecu.system());
+        inverter.key_on = driver.key != Key::Lock;
         inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);
         tx.extend(inverter.frames(bus));
         let asked = tester.exchange(&tx);

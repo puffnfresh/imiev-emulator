@@ -47,6 +47,7 @@ const ABS_SPEED_ID: u16 = 0x215; // b0:b1 = vehicle speed * 128 (km/h)
 const WHEEL_RPM_ZERO: u16 = 0xc000; // wheel rpm word = 0xc000 + rpm * 2 (the EV-ECU reads the low 14 bits)
 const BRAKE_PEDAL_RELEASED: [u8; 2] = [0x60, 0x00];
 const WHEEL_SPEED_BASE: [u8; 8] = [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x06];
+const WHEEL_SPEED_KEY_OFF: [u8; 8] = [0xFF, 0xFF, 0x01, 0x64, 0x2A, 0x00, 0x00, 0x06]; // as the meter sends it at LOCK
 const INV_STANDSTILL: u16 = 10_000; // rpm word offset (word = 10000 + rpm)
 const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until the link is charged
 const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
@@ -60,6 +61,7 @@ const INV_STATUS_SETTLED_BIT: u8 = 0x10; // 0x288 b6 bit4: inverter status "sett
 
 pub struct Inverter {
     pub(crate) hv_connected: bool,
+    pub(crate) key_on: bool,
     dclink_half: f32, // DC-link voltage / 2
     torque_nm: f32,
     speed: f32, // m/s
@@ -68,7 +70,7 @@ pub struct Inverter {
 
 impl Default for Inverter {
     fn default() -> Self {
-        Inverter { hv_connected: false, dclink_half: INV_DCLINK_IDLE_HALF, torque_nm: 0.0, speed: 0.0, rpm: 0.0 }
+        Inverter { hv_connected: false, key_on: true, dclink_half: INV_DCLINK_IDLE_HALF, torque_nm: 0.0, speed: 0.0, rpm: 0.0 }
     }
 }
 
@@ -130,8 +132,13 @@ impl Inverter {
             b6 &= !INV_STATUS_SETTLED_BIT;
         }
         let dclink = self.dclink_half as u8;
-        let mut speed_frame = WHEEL_SPEED_BASE;
-        speed_frame[1] = self.kmh().clamp(0.0, 254.0) as u8;
+        let speed_frame = if self.key_on {
+            let mut f = WHEEL_SPEED_BASE;
+            f[1] = self.kmh().clamp(0.0, 254.0) as u8;
+            f
+        } else {
+            WHEEL_SPEED_KEY_OFF
+        };
         let mut out = vec![
             frame(INV_RPM_ID, &[th, tl, wh, wl, dclink, 0x00, b6, b7]),
             frame(INV_TORQUE_ID, &[0x2e, 0x2e, 0x2f, 0x2e, 0x00, 0x00, wh, wl]),
@@ -242,5 +249,15 @@ mod tests {
         assert_eq!(status & INV_STATUS_SETTLED_BIT, 0);
         // Once the EV-ECU is in DRIVE the inverter reports settled again.
         assert_ne!(dclink_and_status(&inv, &commanding(0.0)).1 & INV_STATUS_SETTLED_BIT, 0);
+    }
+
+    #[test]
+    fn the_meter_reports_the_key() {
+        let mut inv = Inverter::default();
+        let bus = CanBus::default();
+        let meter = |inv: &Inverter| inv.frames(&bus).into_iter().find(|f| f.id == WHEEL_SPEED_ID).unwrap().data;
+        assert_eq!(meter(&inv)[0], 0xfe);
+        inv.key_on = false;
+        assert_eq!(meter(&inv), WHEEL_SPEED_KEY_OFF);
     }
 }
