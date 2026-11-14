@@ -3,6 +3,7 @@
 mod airbag;
 mod battery;
 mod charger;
+mod dcdc;
 mod driver;
 mod eeprom;
 mod etacs;
@@ -17,10 +18,11 @@ mod vacuum;
 
 pub use battery::Cmu;
 pub use charger::Charger;
-pub use driver::{DriverControls, Gear};
+pub use driver::{DriverControls, Gear, Key};
 pub use eeprom::Eeprom;
 pub use etacs::{immobiliser_key, Etacs};
-pub use hv::{dclink_connected, AcRelay, Condenser, Contactor};
+pub use dcdc::DcDcConverter;
+pub use hv::{dclink_connected, AcRelay, Contactor};
 pub use ic2::Ic2Companion;
 pub use inverter::{Inverter, Vehicle, VEHICLE_DT};
 pub use lamps::BacklampRelay;

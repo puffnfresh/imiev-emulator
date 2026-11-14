@@ -6,6 +6,8 @@ use crate::{CanBus, Part};
 
 const WAKE_PORT: u32 = 0x0080_0706; // P6DATA
 const WAKE: u8 = 0x20; // P6.5 input, active low: the OBC asks the EV-ECU to power it
+const QUICK_PORT: u32 = 0x0080_0708; // P8DATA
+const QUICK_POWER: u8 = 0x08; // P8.3 input, active low: the quick charger's power supply signal
 const RELAY_PORT: u32 = 0x0080_070b; // P11DATA
 const RELAY_COIL: u8 = 0x08; // P11.3 output: the OBC power-supply relay
 const CONTACT_PORT: u32 = 0x0080_0700; // P0DATA
@@ -17,6 +19,7 @@ pub struct Charger;
 impl Part for Charger {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         chip.set_gpio_input(WAKE_PORT, WAKE, WAKE);
+        chip.set_gpio_input(QUICK_PORT, QUICK_POWER, QUICK_POWER);
         let on = chip.gpio_level(RELAY_PORT) & RELAY_COIL != 0;
         chip.set_gpio_input(CONTACT_PORT, CONTACT_MONITOR, if on { CONTACT_MONITOR } else { 0 });
     }

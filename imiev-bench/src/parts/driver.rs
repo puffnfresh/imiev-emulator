@@ -9,10 +9,20 @@ use crate::{CanBus, Part};
 const SHIFT_PORT: u32 = 0x0080_0704; // P4DATA - shift lever switches
 const INHIBITOR_PORT: u32 = 0x0080_0702; // P2DATA - inhibitor switch on the transmission
 const SHIFT_MATRIX_MASK: u8 = 0x3f; // six position switches, active-low
-const IGNITION_PORT: u32 = 0x0080_0709; // P9DATA
-const IGNITION_ON_BITS: u8 = 0x60; // IG1 + ST (start) asserted
+const IG_PORT: u32 = 0x0080_0709; // P9DATA
+const IG: u8 = 0x02; // P9.1 input, active low: the electric motor switch at ON or START
+const ST_PORT: u32 = 0x0080_0700; // P0DATA
+const ST: u8 = 0x04; // P0.2 input: the electric motor switch at START
+const START_HOLD_PUMPS: u32 = (crate::CYCLES_PER_SECOND / crate::BUS_PUMP_INTERVAL) as u32; // a driver holds START for a second
 const APS_TEST_PORT: u32 = 0x0080_0701; // P1DATA
 const APS_TEST_BIT: u8 = 0x01; // P1.0 output: a self-test pulse for accelerator sensor 2
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Lock,
+    On,
+    Start,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Gear {
@@ -53,14 +63,15 @@ const BPS_FULL_RAW: u16 = 0x600; // brake-stroke sensor, pedal fully pressed
 
 pub struct DriverControls {
     pub gear: Gear,
-    pub key_on: bool,
+    pub key: Key,
+    start_held: u32,
     pub pedal_pct: f32, // accelerator 0..100 %
     pub brake_pct: f32, // brake 0..100 %
 }
 
 impl Default for DriverControls {
     fn default() -> Self {
-        DriverControls { gear: Gear::Park, key_on: true, pedal_pct: 0.0, brake_pct: 0.0 }
+        DriverControls { gear: Gear::Park, key: Key::Start, start_held: 0, pedal_pct: 0.0, brake_pct: 0.0 }
     }
 }
 
@@ -73,8 +84,16 @@ impl Part for DriverControls {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
         chip.set_gpio_input(SHIFT_PORT, SHIFT_MATRIX_MASK, self.gear.matrix());
         chip.set_gpio_input(INHIBITOR_PORT, SHIFT_MATRIX_MASK, self.gear.inhibitor());
-        let key = |bits| if self.key_on { bits } else { 0 };
-        chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
+        if self.key == Key::Start {
+            self.start_held += 1;
+            if self.start_held >= START_HOLD_PUMPS {
+                self.key = Key::On;
+            }
+        } else {
+            self.start_held = 0;
+        }
+        chip.set_gpio_input(IG_PORT, IG, if self.key == Key::Lock { IG } else { 0 });
+        chip.set_gpio_input(ST_PORT, ST, if self.key == Key::Start { ST } else { 0 });
         // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.
         let main = pedal_raw(self.pedal_pct, APS_RELEASED_RAW, APS_FULL_RAW);
         chip.adc_mut().set_channel(ev_ecu_adc::ACCEL_1_SIGNAL, main);

@@ -85,10 +85,10 @@ fn imiev_bmu_reports_the_cmus_cell_voltages() {
 }
 
 #[test]
-fn imiev_ev_ecu_holds_precharge_without_false_undervoltage() {
+fn imiev_ev_ecu_powers_on_without_false_undervoltage() {
     let mut sim = Simulation::imiev();
     sim.run(16_000_000);
-    assert!(!sim.ecu_dtcs().iter().any(|d| d == "P0562"), "P0562 false-latched while the condenser was still precharging");
+    assert!(!sim.ecu_dtcs().iter().any(|d| d == "P0562"), "P0562 at power-on: the 12 V system read low");
     assert_ne!(sim.ecu_op_mode(), OP_MODE_SHUTDOWN, "ECU fell into SHUTDOWN during precharge");
 }
 
@@ -430,3 +430,18 @@ fn a_remote_asking_for_heat_leaves_ready_alone() {
     sim.set_remote_climate(Some(ClimateMode::Heat));
     drives_without_dtcs(&mut sim, "9499B13103 with a remote");
 }
+
+const SYSTEM_DECIVOLTS: usize = 4; // 0x285 b4
+
+#[test]
+fn reports_the_12v_system_as_the_car_does() {
+    let mut sim = Simulation::imiev();
+    sim.run(CYCLES_PER_SECOND / 5);
+    let battery = sim.bus().last(0x285).map_or(0, |f| f.data[SYSTEM_DECIVOLTS]);
+    sim.run(3 * CYCLES_PER_SECOND);
+    let charging = sim.bus().last(0x285).map_or(0, |f| f.data[SYSTEM_DECIVOLTS]);
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE);
+    assert!((125..=130).contains(&battery), "{battery} decivolts before READY: the 12 V battery alone");
+    assert!((141..=144).contains(&charging), "{charging} decivolts in READY: the DC-DC charging it");
+}
+

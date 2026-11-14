@@ -183,7 +183,7 @@ impl Simulation {
     pub fn new(ev_ecu: &EvEcu, bmu: &Bmu) -> Simulation {
         let ev_ecu = Node::new("EV-ECU", ev_ecu.image)
             .with_adc_env(EV_ECU_BOOT_ADC)
-            .with_part(Box::new(Condenser::default()))
+            .with_part(Box::new(DcDcConverter::default()))
             .with_part(Box::new(Contactor))
             .with_part(Box::new(AcRelay))
             .with_part(Box::new(VacuumPump::default()))
@@ -228,6 +228,10 @@ impl Simulation {
 
     pub fn set_pedal(&mut self, pct: f32) {
         self.driver.pedal_pct = pct.clamp(0.0, 100.0);
+    }
+
+    pub fn set_key(&mut self, key: Key) {
+        self.driver.key = key;
     }
 
     pub fn set_brake(&mut self, pct: f32) {

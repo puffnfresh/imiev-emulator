@@ -16,7 +16,7 @@ pub(crate) mod bmu_adc {
 }
 
 pub(crate) mod ev_ecu_adc {
-    pub const CONDENSER: usize = 0; // HV DC-link voltage sense
+    pub const SYSTEM_VOLTAGE: usize = 0; // the 12 V system, times 1/3.75
     pub const BRAKE_SUPPLY: usize = 1; // brake-stroke sensor 5V supply
     pub const ACCEL_1_SIGNAL: usize = 2; // accelerator sensor 1 (main) signal
     pub const BRAKE_SIGNAL: usize = 3; // brake-stroke sensor signal
@@ -43,7 +43,7 @@ pub(crate) const BMU_BOOT_ADC: &[(usize, u16)] = &[
 ];
 
 pub(crate) const EV_ECU_BOOT_ADC: &[(usize, u16)] = &[
-    (ev_ecu_adc::CONDENSER, 0x000),       // HV DC-link discharged at power-on; charges during precharge
+    (ev_ecu_adc::SYSTEM_VOLTAGE, 0x2b5),  // the 12 V battery, 12.7 V
     (ev_ecu_adc::BRAKE_SUPPLY, SUPPLY_5V),
     (ev_ecu_adc::ACCEL_1_SIGNAL, 0x0c0),  // released accelerator, main
     (ev_ecu_adc::BRAKE_SIGNAL, 0x130),    // released brake (~1.5V)
