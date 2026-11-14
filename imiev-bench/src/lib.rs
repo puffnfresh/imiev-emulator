@@ -58,10 +58,12 @@ pub trait BusSource {
 pub struct Node {
     pub name: &'static str,
     sys: System,
+    adc_env: Vec<(usize, u16)>,
     parts: Vec<Box<dyn Part>>,
     local_parts: Vec<Box<dyn Part>>,
     local_seen: Option<u64>,
     local_polling: bool,
+    powered: bool,
 }
 
 impl Node {
@@ -69,18 +71,40 @@ impl Node {
         Node {
             name,
             sys: System::new(firmware),
+            adc_env: Vec::new(),
             parts: Vec::new(),
             local_parts: Vec::new(),
             local_seen: None,
             local_polling: false,
+            powered: true,
         }
+    }
+
+    pub fn powered(&self) -> bool {
+        self.powered
+    }
+
+    fn supply(&mut self, on: bool) {
+        if on && !self.powered {
+            self.reset();
+        }
+        self.powered = on;
     }
 
     pub fn with_adc_env(mut self, env: &[(usize, u16)]) -> Self {
         for &(ch, raw) in env {
             self.set_adc(ch, raw);
         }
+        self.adc_env.extend_from_slice(env);
         self
+    }
+
+    pub fn reset(&mut self) {
+        self.sys.reset();
+        for &(ch, raw) in &self.adc_env {
+            self.sys.adc_mut().set_channel(ch, raw);
+        }
+        self.local_seen = None;
     }
 
     pub fn with_part(mut self, part: Box<dyn Part>) -> Self {
@@ -113,10 +137,15 @@ impl Node {
     }
 
     fn deliver(&mut self, f: &CanFrame) {
-        self.sys.inject_can0(f.id, &f.data[..f.dlc as usize]);
+        if self.powered {
+            self.sys.inject_can0(f.id, &f.data[..f.dlc as usize]);
+        }
     }
 
     fn run_steps(&mut self, n: u64, bus: &CanBus) {
+        if !self.powered {
+            return;
+        }
         for _ in 0..n {
             self.step();
             self.update_local_parts(bus);
@@ -347,6 +376,9 @@ impl Simulation {
         }
         ev_ecu.update_parts(bus);
         driver.update(ev_ecu.system_mut(), bus);
+        let woken = driver.key != Key::Lock;
+        let held = ev_ecu.powered() && holds_power(ev_ecu.system());
+        ev_ecu.supply(woken || held);
         tx
     }
 

@@ -462,3 +462,21 @@ fn turning_the_key_off_shuts_down_and_discharges() {
     let dtcs = sim.ecu_dtcs();
     assert!(dtcs.is_empty(), "DTCs confirmed shutting down: {dtcs:?}");
 }
+
+const OP_MODE_OFF: u32 = 1;
+
+#[test]
+fn the_ev_ecu_lets_go_of_its_power_and_starts_again() {
+    let mut sim = Simulation::imiev();
+    sim.run(3 * CYCLES_PER_SECOND);
+    sim.set_key(Key::Lock);
+    sim.run(6 * CYCLES_PER_SECOND);
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_OFF, "the car reaches mode 1 about 5.7 s after the key");
+    assert!(!sim.ev_ecu().powered(), "the EV-ECU still holds its power");
+    sim.set_key(Key::Start);
+    sim.run(3 * CYCLES_PER_SECOND);
+    assert!(sim.ev_ecu().powered());
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "no READY on the second start; DTCs {:?}", sim.ecu_dtcs());
+    let dtcs = sim.ecu_dtcs();
+    assert!(dtcs.is_empty(), "DTCs confirmed over the off and on: {dtcs:?}");
+}
