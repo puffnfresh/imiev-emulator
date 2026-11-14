@@ -453,7 +453,7 @@ fn turning_the_key_off_shuts_down_and_discharges() {
     sim.set_key(Key::Lock);
     sim.run(CYCLES_PER_SECOND);
     assert_eq!(sim.ecu_op_mode(), OP_MODE_SHUTDOWN, "the car leaves READY within a second, as it does at 0.7 s");
-    sim.run(5 * CYCLES_PER_SECOND);
+    sim.run(CYCLES_PER_SECOND * 34 / 10); // the link is discharged, and the EV-ECU not yet off
     assert!(!dclink_connected(sim.ev_ecu().system()), "contactors still closed");
     let dclink = sim.bus().last(0x288).map_or(0xff, |f| f.data[4]);
     assert!(dclink <= 2, "DC link still at {} V", dclink as u32 * 2);

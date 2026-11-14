@@ -56,6 +56,10 @@ const ACTIVE_DISCHARGE_TAU_S: f32 = 0.5; // the link falls from 342 V to 2 V in 
 const PASSIVE_DISCHARGE_TAU_S: f32 = 60.0; // otherwise it holds its charge
 const ECU_DISCHARGE_REQUEST: u8 = 0x01; // 0x285 b6 bit0: the EV-ECU asks the inverter to discharge the link
 const INV_STATUS_DISCHARGING_BIT: u8 = 0x02; // 0x288 b6 bit1: discharging, as long as it is asked to
+const INV_STATUS_ACTIVE_BIT: u8 = 0x10; // 0x288 b7 bit4: on once the EV-ECU starts up; off once the link is discharged
+const ECU_MODES_STARTED: std::ops::RangeInclusive<u8> = 2..=4; // 0x285 b2 & 0x0f: precharge, READY, DRIVE
+const INV_SETTLE_S: f32 = 0.3; // after its discharge, the inverter goes idle
+const INV_DCLINK_DISCHARGED_HALF: f32 = 2.0;
 const ECU_MODE_DRIVE: u8 = 0x14; // 0x285 b2 once the EV-ECU is in DRIVE
 const ECU_GEAR_ID: u16 = 0x418; // the ECU re-broadcasts the selected gear here
 const INV_STATUS_PARK: (u8, u8) = (0x11, 0x10); // 0x288 b6:b7 - inverter idle/ready in Park
@@ -67,6 +71,8 @@ pub struct Inverter {
     pub(crate) hv_connected: bool,
     pub(crate) key_on: bool,
     dclink_half: f32, // DC-link voltage / 2
+    active: bool,
+    idle_s: f32,
     torque_nm: f32,
     speed: f32, // m/s
     rpm: f32, // motor rpm (via the reduction gear)
@@ -74,7 +80,7 @@ pub struct Inverter {
 
 impl Default for Inverter {
     fn default() -> Self {
-        Inverter { hv_connected: false, key_on: true, dclink_half: INV_DCLINK_IDLE_HALF, torque_nm: 0.0, speed: 0.0, rpm: 0.0 }
+        Inverter { hv_connected: false, key_on: true, dclink_half: INV_DCLINK_IDLE_HALF, active: false, idle_s: 0.0, torque_nm: 0.0, speed: 0.0, rpm: 0.0 }
     }
 }
 
@@ -103,6 +109,15 @@ impl Inverter {
             (INV_DCLINK_IDLE_HALF, PASSIVE_DISCHARGE_TAU_S)
         };
         self.dclink_half += (target - self.dclink_half) * (dt / tau).min(1.0);
+        let mode = bus.last(ECU_TORQUE_ID).map(|f| f.data[2] & 0x0f);
+        if mode.is_some_and(|m| ECU_MODES_STARTED.contains(&m)) {
+            self.active = true;
+        }
+        let discharged = !self.hv_connected && !Self::discharge_requested(bus) && self.dclink_half <= INV_DCLINK_DISCHARGED_HALF;
+        self.idle_s = if self.active && discharged && !mode.is_some_and(|m| ECU_MODES_STARTED.contains(&m)) { self.idle_s + dt } else { 0.0 };
+        if self.idle_s >= INV_SETTLE_S {
+            self.active = false;
+        }
         self.drive(Self::commanded_torque(bus), brake, dt);
     }
 
@@ -141,7 +156,10 @@ impl Inverter {
         let [th, tl] = self.torque_word();
         let gear418 = bus.last(ECU_GEAR_ID).map(|f| f.data[0]).unwrap_or(0);
         let drive_gear = matches!(gear418, b'D' | b'R' | 0x83 | 0x32); // D, R, B (Gear::Eco), C (Gear::Comfort), as OVMS reads them
-        let (mut b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
+        let (mut b6, mut b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
+        if !self.active {
+            b7 &= !INV_STATUS_ACTIVE_BIT;
+        }
         if self.engaging(bus) {
             b6 &= !INV_STATUS_SETTLED_BIT;
         }
@@ -300,5 +318,32 @@ mod tests {
         assert_eq!(meter(&inv)[0], 0xfe);
         inv.key_on = false;
         assert_eq!(meter(&inv), WHEEL_SPEED_KEY_OFF);
+    }
+
+    #[test]
+    fn active_from_start_up_until_its_link_is_discharged() {
+        let mut inv = Inverter::default();
+        let mut bus = CanBus::default();
+        let active = |inv: &Inverter, bus: &CanBus| dclink_and_status_b7(inv, bus) & INV_STATUS_ACTIVE_BIT != 0;
+        assert!(!active(&inv, &bus));
+        bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x02, 0, 0, 0, 0, 0]));
+        inv.hv_connected = true;
+        inv.integrate(&bus, 0.0, VEHICLE_DT);
+        assert!(active(&inv, &bus));
+        inv.hv_connected = false;
+        bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x05, 0, 0, 0, ECU_DISCHARGE_REQUEST, 0]));
+        for _ in 0..steps(3.0) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        assert!(active(&inv, &bus), "idle while still asked to discharge");
+        bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x05, 0, 0, 0, 0, 0]));
+        for _ in 0..steps(INV_SETTLE_S + 0.1) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        assert!(!active(&inv, &bus));
+    }
+
+    fn dclink_and_status_b7(inv: &Inverter, bus: &CanBus) -> u8 {
+        inv.frames(bus).into_iter().find(|f| f.id == INV_RPM_ID).unwrap().data[7]
     }
 }
