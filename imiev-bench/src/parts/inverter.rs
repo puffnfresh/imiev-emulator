@@ -52,6 +52,10 @@ const INV_STANDSTILL: u16 = 10_000; // rpm word offset (word = 10000 + rpm)
 const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until the link is charged
 const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
 const PRECHARGE_TAU_S: f32 = 0.05;
+const ACTIVE_DISCHARGE_TAU_S: f32 = 0.5; // the link falls from 342 V to 2 V in ~2 s once asked to
+const PASSIVE_DISCHARGE_TAU_S: f32 = 60.0; // otherwise it holds its charge
+const ECU_DISCHARGE_REQUEST: u8 = 0x01; // 0x285 b6 bit0: the EV-ECU asks the inverter to discharge the link
+const INV_STATUS_DISCHARGING_BIT: u8 = 0x02; // 0x288 b6 bit1: discharging, as long as it is asked to
 const ECU_MODE_DRIVE: u8 = 0x14; // 0x285 b2 once the EV-ECU is in DRIVE
 const ECU_GEAR_ID: u16 = 0x418; // the ECU re-broadcasts the selected gear here
 const INV_STATUS_PARK: (u8, u8) = (0x11, 0x10); // 0x288 b6:b7 - inverter idle/ready in Park
@@ -86,9 +90,19 @@ impl Inverter {
         })
     }
 
+    fn discharge_requested(bus: &CanBus) -> bool {
+        bus.last(ECU_TORQUE_ID).is_some_and(|f| f.data[6] & ECU_DISCHARGE_REQUEST != 0)
+    }
+
     pub(crate) fn integrate(&mut self, bus: &CanBus, brake: f32, dt: f32) {
-        let target = if self.hv_connected { INV_DCLINK_PACK_HALF as f32 } else { INV_DCLINK_IDLE_HALF };
-        self.dclink_half += (target - self.dclink_half) * (dt / PRECHARGE_TAU_S).min(1.0);
+        let (target, tau) = if self.hv_connected {
+            (INV_DCLINK_PACK_HALF as f32, PRECHARGE_TAU_S)
+        } else if Self::discharge_requested(bus) {
+            (INV_DCLINK_IDLE_HALF, ACTIVE_DISCHARGE_TAU_S)
+        } else {
+            (INV_DCLINK_IDLE_HALF, PASSIVE_DISCHARGE_TAU_S)
+        };
+        self.dclink_half += (target - self.dclink_half) * (dt / tau).min(1.0);
         self.drive(Self::commanded_torque(bus), brake, dt);
     }
 
@@ -130,6 +144,9 @@ impl Inverter {
         let (mut b6, b7) = if drive_gear { INV_STATUS_DRIVE } else { INV_STATUS_PARK };
         if self.engaging(bus) {
             b6 &= !INV_STATUS_SETTLED_BIT;
+        }
+        if !self.hv_connected && Self::discharge_requested(bus) {
+            b6 |= INV_STATUS_DISCHARGING_BIT;
         }
         let dclink = self.dclink_half as u8;
         let speed_frame = if self.key_on {
@@ -249,6 +266,30 @@ mod tests {
         assert_eq!(status & INV_STATUS_SETTLED_BIT, 0);
         // Once the EV-ECU is in DRIVE the inverter reports settled again.
         assert_ne!(dclink_and_status(&inv, &commanding(0.0)).1 & INV_STATUS_SETTLED_BIT, 0);
+    }
+
+    #[test]
+    fn discharges_the_link_while_asked_to() {
+        let mut inv = Inverter { hv_connected: true, ..Inverter::default() };
+        let mut bus = CanBus::default();
+        bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x05, 0, 0, 0, 0, 0]));
+        for _ in 0..steps(0.25) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        inv.hv_connected = false;
+        for _ in 0..steps(3.0) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        let (held, status) = dclink_and_status(&inv, &bus);
+        assert!(held >= INV_DCLINK_PACK_HALF - 10, "the open link bled to {held} unasked");
+        assert_eq!(status & INV_STATUS_DISCHARGING_BIT, 0);
+        bus.record(frame(ECU_TORQUE_ID, &[0x07, 0xd0, 0x05, 0, 0, 0, ECU_DISCHARGE_REQUEST, 0]));
+        for _ in 0..steps(3.0) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        let (dclink, status) = dclink_and_status(&inv, &bus);
+        assert!(dclink <= 2, "the link only fell to {dclink}");
+        assert_ne!(status & INV_STATUS_DISCHARGING_BIT, 0);
     }
 
     #[test]
