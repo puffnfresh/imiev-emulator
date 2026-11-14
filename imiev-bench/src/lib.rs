@@ -168,6 +168,7 @@ pub struct Simulation {
     driver: DriverControls,
     sources: Vec<Box<dyn BusSource>>,
     inverter: Inverter,
+    remote: Option<EvRemote>,
     tester: Tester,
     bus: CanBus,
     pump_every: u64,
@@ -197,6 +198,7 @@ impl Simulation {
             driver: DriverControls::default(),
             sources: vec![Box::new(Vehicle), Box::new(Etacs::new(BENCH_VIN)), Box::new(SteeringAngleSensor::default())],
             inverter: Inverter::default(),
+            remote: None,
             tester: Tester::default(),
             bus: CanBus::default(),
             pump_every: BUS_PUMP_INTERVAL,
@@ -230,6 +232,14 @@ impl Simulation {
 
     pub fn set_brake(&mut self, pct: f32) {
         self.driver.brake_pct = pct.clamp(0.0, 100.0);
+    }
+
+    pub fn fit_remote(&mut self) {
+        self.remote.get_or_insert_with(EvRemote::default);
+    }
+
+    pub fn set_remote_climate(&mut self, mode: Option<ClimateMode>) {
+        self.remote.as_mut().expect("no EV remote-ECU fitted").set_climate(mode);
     }
 
     pub fn ecu_op_mode(&self) -> u32 {
@@ -312,11 +322,14 @@ impl Simulation {
     }
 
     fn pump_ev_ecu(&mut self, bmu_tx: Vec<CanFrame>) -> Vec<CanFrame> {
-        let Simulation { ev_ecu, driver, sources, inverter, tester, bus, .. } = self;
+        let Simulation { ev_ecu, driver, sources, inverter, remote, tester, bus, .. } = self;
         let mut tx = bmu_tx;
         tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
             tx.extend(s.frames(bus));
+        }
+        if let Some(remote) = remote {
+            tx.extend(remote.frames(bus));
         }
         inverter.hv_connected = dclink_connected(ev_ecu.system());
         inverter.integrate(bus, driver.brake_pct / 100.0, VEHICLE_DT);

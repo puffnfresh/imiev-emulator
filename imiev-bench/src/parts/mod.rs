@@ -11,6 +11,7 @@ mod ic2;
 mod inverter;
 mod lamps;
 mod leak;
+mod remote;
 mod steering;
 mod vacuum;
 
@@ -24,6 +25,7 @@ pub use ic2::Ic2Companion;
 pub use inverter::{Inverter, Vehicle, VEHICLE_DT};
 pub use lamps::BacklampRelay;
 pub use leak::LeakDetector;
+pub use remote::{ClimateMode, EvRemote, REMOTE_CLIMATE_ID};
 pub use steering::SteeringAngleSensor;
 pub use vacuum::VacuumPump;
 pub use airbag::AirbagEcu;

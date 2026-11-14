@@ -357,7 +357,7 @@ fn czero_pair_reaches_ready() {
     ev_ecu_reaches_ready(sim, "C-Zero pair");
 }
 
-fn drives_without_dtcs(mut sim: Simulation, part: &str) {
+fn drives_without_dtcs(sim: &mut Simulation, part: &str) {
     sim.run(6 * CYCLES_PER_SECOND);
     let dtcs = sim.ecu_dtcs();
     assert_eq!(sim.ecu_op_mode(), OP_MODE_DRIVE, "{part}: fell out of READY; confirmed: {dtcs:?}");
@@ -386,12 +386,12 @@ fn drives_without_dtcs(mut sim: Simulation, part: &str) {
 
 #[test]
 fn czero_pair_drives_without_dtcs() {
-    drives_without_dtcs(Simulation::new(&firmware::EV_ECU_9499A43902, &firmware::BMU_9499A84200), "C-Zero pair");
+    drives_without_dtcs(&mut Simulation::new(&firmware::EV_ECU_9499A43902, &firmware::BMU_9499A84200), "C-Zero pair");
 }
 
 #[test]
 fn ev_ecu_9499b13103_drives_without_dtcs() {
-    drives_without_dtcs(with_ev_ecu(&firmware::EV_ECU_9499B13103), "9499B13103");
+    drives_without_dtcs(&mut with_ev_ecu(&firmware::EV_ECU_9499B13103), "9499B13103");
 }
 
 #[test]
@@ -407,4 +407,26 @@ fn every_build_is_in_the_registry() {
     for b in firmware::BMUS {
         assert_eq!(b.image.len(), 0x10_0000, "{}", b.part);
     }
+}
+
+#[test]
+fn only_the_c_zero_lineage_listens_for_the_remote() {
+    for (b, listens) in [
+        (&firmware::EV_ECU_9499A18206, false),
+        (&firmware::EV_ECU_9499B13103, true),
+        (&firmware::EV_ECU_9499A43902, true),
+    ] {
+        let mut sim = with_ev_ecu(b);
+        sim.run(16_000_000);
+        let armed = sim.ev_ecu_mut().system_mut().inject_can0(REMOTE_CLIMATE_ID, &[0xc4]);
+        assert_eq!(armed, listens, "{}: a CAN0 mailbox for 0x38d", b.part);
+    }
+}
+
+#[test]
+fn a_remote_asking_for_heat_leaves_ready_alone() {
+    let mut sim = with_ev_ecu(&firmware::EV_ECU_9499B13103);
+    sim.fit_remote();
+    sim.set_remote_climate(Some(ClimateMode::Heat));
+    drives_without_dtcs(&mut sim, "9499B13103 with a remote");
 }
