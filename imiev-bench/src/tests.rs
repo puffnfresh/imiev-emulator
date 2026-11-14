@@ -480,3 +480,18 @@ fn the_ev_ecu_lets_go_of_its_power_and_starts_again() {
     let dtcs = sim.ecu_dtcs();
     assert!(dtcs.is_empty(), "DTCs confirmed over the off and on: {dtcs:?}");
 }
+
+const OP_MODE_CHARGE: u32 = 6;
+
+#[test]
+fn plugging_in_wakes_the_ev_ecu_to_charge() {
+    let mut sim = Simulation::imiev();
+    sim.set_key(Key::Lock);
+    sim.run(CYCLES_PER_SECOND);
+    assert!(!sim.ev_ecu().powered(), "the EV-ECU came on with the key off and nothing plugged in");
+    sim.set_plugged(true);
+    sim.run(2 * CYCLES_PER_SECOND);
+    assert!(sim.ev_ecu().powered());
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
+    assert!(dclink_connected(sim.ev_ecu().system()), "charging without the contactors closed");
+}

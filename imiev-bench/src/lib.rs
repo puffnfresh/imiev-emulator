@@ -195,6 +195,7 @@ pub struct Simulation {
     bmu: Node,
     ev_ecu: Node,
     driver: DriverControls,
+    charger: Charger,
     sources: Vec<Box<dyn BusSource>>,
     inverter: Inverter,
     remote: Option<EvRemote>,
@@ -217,7 +218,6 @@ impl Simulation {
             .with_part(Box::new(AcRelay))
             .with_part(Box::new(VacuumPump::default()))
             .with_part(Box::new(AirbagEcu::default()))
-            .with_part(Box::new(Charger))
             .with_part(Box::new(BacklampRelay))
             .with_local_part(Box::new(Ic2Companion::default()))
             .with_local_part(Box::new(Eeprom::ev_ecu(BENCH_VIN)));
@@ -225,6 +225,7 @@ impl Simulation {
             bmu: bmu_node(bmu),
             ev_ecu,
             driver: DriverControls::default(),
+            charger: Charger::default(),
             sources: vec![Box::new(Vehicle), Box::new(Etacs::new(BENCH_VIN)), Box::new(SteeringAngleSensor::default())],
             inverter: Inverter::default(),
             remote: None,
@@ -257,6 +258,10 @@ impl Simulation {
 
     pub fn set_pedal(&mut self, pct: f32) {
         self.driver.pedal_pct = pct.clamp(0.0, 100.0);
+    }
+
+    pub fn set_plugged(&mut self, plugged: bool) {
+        self.charger.plugged = plugged;
     }
 
     pub fn set_key(&mut self, key: Key) {
@@ -355,7 +360,7 @@ impl Simulation {
     }
 
     fn pump_ev_ecu(&mut self, bmu_tx: Vec<CanFrame>) -> Vec<CanFrame> {
-        let Simulation { ev_ecu, driver, sources, inverter, remote, tester, bus, .. } = self;
+        let Simulation { ev_ecu, driver, charger, sources, inverter, remote, tester, bus, .. } = self;
         let mut tx = bmu_tx;
         tx.append(&mut ev_ecu.drain_tx());
         for s in sources.iter_mut() {
@@ -376,7 +381,8 @@ impl Simulation {
         }
         ev_ecu.update_parts(bus);
         driver.update(ev_ecu.system_mut(), bus);
-        let woken = driver.key != Key::Lock;
+        charger.update(ev_ecu.system_mut(), bus);
+        let woken = driver.key != Key::Lock || charger.waking();
         let held = ev_ecu.powered() && holds_power(ev_ecu.system());
         ev_ecu.supply(woken || held);
         tx
