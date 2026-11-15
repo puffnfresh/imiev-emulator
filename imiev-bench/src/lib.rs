@@ -1,5 +1,6 @@
 //! Simulated components of the i-MiEV.
 
+use std::any::Any;
 use std::collections::BTreeMap;
 
 use mh8106f::System;
@@ -42,7 +43,7 @@ pub fn frame(id: u16, data: &[u8]) -> CanFrame {
     CanFrame { id, dlc: n as u8, data: buf }
 }
 
-pub trait Part: Send {
+pub trait Part: Any + Send {
     fn update(&mut self, chip: &mut System, bus: &CanBus);
 
     fn polling(&self) -> bool {
@@ -115,6 +116,10 @@ impl Node {
     pub fn with_local_part(mut self, part: Box<dyn Part>) -> Self {
         self.local_parts.push(part);
         self
+    }
+
+    pub fn part_mut<T: Part>(&mut self) -> Option<&mut T> {
+        self.parts.iter_mut().chain(self.local_parts.iter_mut()).find_map(|p| (p.as_mut() as &mut dyn Any).downcast_mut())
     }
 
     pub fn system(&self) -> &System {
@@ -264,6 +269,10 @@ impl Simulation {
         self.charger.plugged = plugged;
     }
 
+    pub fn set_fan_connected(&mut self, connected: bool) {
+        self.bmu.part_mut::<BatteryFan>().expect("the BMU has no cooling fan").connected = connected;
+    }
+
     pub fn set_key(&mut self, key: Key) {
         self.driver.key = key;
     }
@@ -405,6 +414,7 @@ fn bmu_node(bmu: &Bmu) -> Node {
         .with_adc_env(BMU_BOOT_ADC)
         .with_part(Box::new(Cmu::default()))
         .with_part(Box::new(LeakDetector))
+        .with_part(Box::new(BatteryFan::default()))
         .with_local_part(Box::new(Eeprom::default()))
 }
 

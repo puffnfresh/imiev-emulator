@@ -508,3 +508,24 @@ fn the_charger_keeps_the_ev_ecu_charging() {
     let dtcs = sim.ecu_dtcs();
     assert!(dtcs.is_empty(), "DTCs confirmed charging: {dtcs:?}");
 }
+
+#[test]
+fn the_battery_fan_turns_while_charging() {
+    let mut sim = Simulation::imiev();
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(10 * CYCLES_PER_SECOND);
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
+    let dtcs = sim.bmu_dtcs();
+    assert!(!dtcs.iter().any(|d| d.starts_with("P1AC")), "battery cooling fan DTCs: {dtcs:?}");
+}
+
+#[test]
+fn an_unplugged_battery_fan_sets_p1ac1() {
+    let mut sim = Simulation::imiev();
+    sim.set_fan_connected(false);
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(10 * CYCLES_PER_SECOND);
+    assert!(sim.bmu_dtcs().contains(&"P1AC1".to_string()));
+}
