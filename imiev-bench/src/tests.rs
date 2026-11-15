@@ -570,3 +570,23 @@ fn a_remote_wakes_a_car_waiting_to_charge_and_heats_it() {
     let dtcs = sim.ecu_dtcs();
     assert!(dtcs.is_empty(), "DTCs confirmed: {dtcs:?}");
 }
+
+#[test]
+fn the_bmu_sees_charging_and_heating() {
+    let pack_amps = |sim: &Simulation| {
+        let f = sim.bus().last(0x373).expect("no 0x373 from the BMU").data;
+        (u16::from_be_bytes([f[2], f[3]]) as f32 - 0x8000 as f32) / 100.0
+    };
+    let mut sim = with_ev_ecu(&firmware::EV_ECU_9499B13103);
+    sim.fit_remote();
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(14 * CYCLES_PER_SECOND);
+    let charger = sim.bus().last(0x389).unwrap().data[2] as f32 / 10.0;
+    assert!(charger > 1.0, "the charger is not charging yet");
+    assert!((pack_amps(&sim) - (charger - 0.68)).abs() < 0.3, "{} A into the pack from {charger} A", pack_amps(&sim));
+    sim.set_remote_climate(Some(ClimateMode::Heat));
+    sim.run(2 * CYCLES_PER_SECOND);
+    let charger = sim.bus().last(0x389).unwrap().data[2] as f32 / 10.0;
+    assert!((pack_amps(&sim) - (charger - 15.0 - 0.68)).abs() < 0.3, "{} A with the heater on", pack_amps(&sim));
+}

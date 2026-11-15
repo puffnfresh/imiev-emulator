@@ -3,6 +3,7 @@
 mod airbag;
 mod battery;
 mod charger;
+mod current;
 mod dcdc;
 mod driver;
 mod eeprom;
@@ -25,6 +26,7 @@ pub use driver::{DriverControls, Gear, Key};
 pub use eeprom::Eeprom;
 pub use etacs::{immobiliser_key, Etacs};
 pub use fan::BatteryFan;
+pub use current::CurrentSensor;
 pub use dcdc::DcDcConverter;
 pub use heater::{Heater, HEATER_ID};
 pub use hv::{dclink_connected, AcRelay, Contactor};

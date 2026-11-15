@@ -428,6 +428,7 @@ fn bmu_node(bmu: &Bmu) -> Node {
         .with_part(Box::new(Cmu::default()))
         .with_part(Box::new(LeakDetector))
         .with_part(Box::new(BatteryFan::default()))
+        .with_part(Box::new(CurrentSensor))
         .with_local_part(Box::new(Eeprom::default()))
 }
 
