@@ -529,3 +529,24 @@ fn an_unplugged_battery_fan_sets_p1ac1() {
     sim.run(10 * CYCLES_PER_SECOND);
     assert!(sim.bmu_dtcs().contains(&"P1AC1".to_string()));
 }
+
+#[test]
+fn a_remote_heats_a_car_on_charge() {
+    let mut sim = with_ev_ecu(&firmware::EV_ECU_9499B13103);
+    sim.fit_remote();
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(3 * CYCLES_PER_SECOND);
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
+    assert!(!sim.heater().heating(), "heating unasked");
+    sim.set_remote_climate(Some(ClimateMode::Heat));
+    sim.run(3 * CYCLES_PER_SECOND);
+    assert!(sim.heater().heating(), "the EV-ECU never powered the A/C side");
+    assert_eq!(sim.bus().last(HEATER_ID).map(|f| f.data[4]), Some(150), "heater current on 0x384");
+    sim.set_remote_climate(None);
+    sim.run(CYCLES_PER_SECOND);
+    assert!(!sim.heater().heating(), "still heating after the remote stopped");
+    assert_eq!(sim.ecu_op_mode(), OP_MODE_CHARGE);
+    let dtcs = sim.ecu_dtcs();
+    assert!(dtcs.is_empty(), "DTCs confirmed: {dtcs:?}");
+}

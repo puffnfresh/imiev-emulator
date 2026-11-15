@@ -11,7 +11,6 @@ const CHASSIS_FRAMES: &[(u16, [u8; 8])] = &[
     (0x5a1, [0, 0, 0, 0, 0, 0, 0, 0]), // diagnostic-status mailboxes
     (0x565, [0, 0, 0, 0, 0, 0, 0, 0]),
     (0x564, [0, 0, 0, 0, 0, 0, 0, 0]),
-    (0x384, [0x00, 0x00, 0x00, 0x1F, 0x00, 0x41, 0x41, 0x00]), // heater/A-C compressor
 ];
 
 #[derive(Default)]
