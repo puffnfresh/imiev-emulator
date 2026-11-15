@@ -40,13 +40,17 @@ const STATUS_TAIL: u8 = 0x06;
 #[derive(Default)]
 pub struct Charger {
     pub plugged: bool,
+    /// EVWO pulled low: timer charging on standby.
+    pub preset_hold: bool,
+    held: bool,
+    done: bool,
     supplied: bool,
     pumps_on: u64,
 }
 
 impl Charger {
     pub fn waking(&self) -> bool {
-        self.plugged
+        self.plugged && !self.preset_hold && !self.done
     }
 
     pub fn dc_amps(&self, bus: &CanBus) -> f32 {
@@ -106,6 +110,13 @@ impl Part for Charger {
         chip.set_gpio_input(QUICK_PORT, QUICK_POWER, QUICK_POWER);
         let on = chip.gpio_level(RELAY_PORT) & RELAY_COIL != 0;
         chip.set_gpio_input(CONTACT_PORT, CONTACT_MONITOR, if on { CONTACT_MONITOR } else { 0 });
+        let released = self.held && !self.preset_hold;
+        if !self.plugged || released {
+            self.done = false;
+        } else if self.supplied && !on {
+            self.done = true;
+        }
+        self.held = self.preset_hold;
         self.supplied = on;
     }
 }
@@ -136,6 +147,42 @@ mod tests {
         charger.update(&mut ecu, &CanBus::default());
         assert_eq!(ecu.gpio_level(WAKE_PORT) & WAKE, 0);
         assert_eq!(ecu.adc().channel(ev_ecu_adc::CHARGE_PORT), CONNECTOR_LATCHED_RAW);
+    }
+
+    #[test]
+    fn once_the_ev_ecu_ends_a_session_it_waits_for_a_new_one() {
+        let mut ecu = System::new(EV_ECU_FW);
+        let bus = CanBus::default();
+        let mut charger = Charger { plugged: true, ..Charger::default() };
+        ecu.set_gpio_input(RELAY_PORT, RELAY_COIL, RELAY_COIL);
+        charger.update(&mut ecu, &bus);
+        ecu.set_gpio_input(RELAY_PORT, RELAY_COIL, 0);
+        charger.update(&mut ecu, &bus);
+        assert!(!charger.waking(), "asked again after the session ended");
+        charger.preset_hold = true;
+        charger.update(&mut ecu, &bus);
+        charger.preset_hold = false;
+        charger.update(&mut ecu, &bus);
+        assert!(charger.waking(), "EVWO let go of, but no new session");
+        ecu.set_gpio_input(RELAY_PORT, RELAY_COIL, RELAY_COIL);
+        charger.update(&mut ecu, &bus);
+        ecu.set_gpio_input(RELAY_PORT, RELAY_COIL, 0);
+        charger.update(&mut ecu, &bus);
+        charger.plugged = false;
+        charger.update(&mut ecu, &bus);
+        charger.plugged = true;
+        assert!(charger.waking(), "plugged in again, but no new session");
+    }
+
+    #[test]
+    fn waits_while_the_remote_holds_timer_charging() {
+        let mut ecu = System::new(EV_ECU_FW);
+        let mut charger = Charger { plugged: true, preset_hold: true, ..Charger::default() };
+        charger.update(&mut ecu, &CanBus::default());
+        assert_eq!(ecu.gpio_level(WAKE_PORT) & WAKE, WAKE);
+        charger.preset_hold = false;
+        charger.update(&mut ecu, &CanBus::default());
+        assert_eq!(ecu.gpio_level(WAKE_PORT) & WAKE, 0);
     }
 
     #[test]

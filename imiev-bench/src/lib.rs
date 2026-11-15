@@ -287,6 +287,10 @@ impl Simulation {
         self.remote.get_or_insert_with(EvRemote::default);
     }
 
+    pub fn set_timer_standby(&mut self, standby: bool) {
+        self.remote.as_mut().expect("no EV remote-ECU fitted").set_timer_standby(standby);
+    }
+
     pub fn set_remote_climate(&mut self, mode: Option<ClimateMode>) {
         self.remote.as_mut().expect("no EV remote-ECU fitted").set_climate(mode);
     }
@@ -398,6 +402,7 @@ impl Simulation {
         }
         ev_ecu.update_parts(bus);
         driver.update(ev_ecu.system_mut(), bus);
+        charger.preset_hold = remote.as_ref().is_some_and(EvRemote::holds_charging);
         charger.update(ev_ecu.system_mut(), bus);
         heater.update(ev_ecu.system(), ev_ecu.powered(), bus);
         let woken = driver.key != Key::Lock || charger.waking();

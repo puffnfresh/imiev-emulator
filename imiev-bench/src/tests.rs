@@ -550,3 +550,23 @@ fn a_remote_heats_a_car_on_charge() {
     let dtcs = sim.ecu_dtcs();
     assert!(dtcs.is_empty(), "DTCs confirmed: {dtcs:?}");
 }
+
+#[test]
+fn a_remote_wakes_a_car_waiting_to_charge_and_heats_it() {
+    let mut sim = with_ev_ecu(&firmware::EV_ECU_9499B13103);
+    sim.fit_remote();
+    sim.set_timer_standby(true);
+    sim.set_key(Key::Lock);
+    sim.set_plugged(true);
+    sim.run(2 * CYCLES_PER_SECOND);
+    assert!(!sim.ev_ecu().powered(), "woke with timer charging on standby");
+    sim.set_remote_climate(Some(ClimateMode::Heat));
+    sim.run(4 * CYCLES_PER_SECOND);
+    assert!(sim.ev_ecu().powered(), "the remote never woke the EV-ECU");
+    assert!(sim.heater().heating(), "awake but not heating, in mode {}", sim.ecu_op_mode());
+    sim.set_remote_climate(None);
+    sim.run(CYCLES_PER_SECOND);
+    assert!(!sim.heater().heating(), "still heating after the remote stopped");
+    let dtcs = sim.ecu_dtcs();
+    assert!(dtcs.is_empty(), "DTCs confirmed: {dtcs:?}");
+}

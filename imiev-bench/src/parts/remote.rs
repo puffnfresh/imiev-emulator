@@ -6,6 +6,7 @@ pub const REMOTE_CLIMATE_ID: u16 = 0x38d;
 const REMOTE_CLIMATE_PUMPS: u64 = CYCLES_PER_SECOND / BUS_PUMP_INTERVAL / 20;
 
 const RUN: u8 = 0x01;
+const WAKE_PULSE_PUMPS: u64 = CYCLES_PER_SECOND / BUS_PUMP_INTERVAL / 5;
 const MODE_SHIFT: u8 = 1;
 const ALWAYS_SET: u8 = 0xc0;
 
@@ -19,19 +20,32 @@ pub enum ClimateMode {
 pub struct EvRemote {
     mode: ClimateMode,
     running: bool,
+    timer_standby: bool,
+    wake_pulse: u64,
     pumps: u64,
 }
 
 impl Default for EvRemote {
     fn default() -> Self {
-        EvRemote { mode: ClimateMode::Heat, running: false, pumps: 0 }
+        EvRemote { mode: ClimateMode::Heat, running: false, timer_standby: false, wake_pulse: 0, pumps: 0 }
     }
 }
 
 impl EvRemote {
+    pub fn set_timer_standby(&mut self, standby: bool) {
+        self.timer_standby = standby;
+    }
+
+    pub fn holds_charging(&self) -> bool {
+        self.timer_standby && !self.running || self.wake_pulse > 0
+    }
+
     pub fn set_climate(&mut self, mode: Option<ClimateMode>) {
         if let Some(mode) = mode {
             self.mode = mode;
+        }
+        if mode.is_some() && !self.running {
+            self.wake_pulse = WAKE_PULSE_PUMPS;
         }
         self.running = mode.is_some();
     }
@@ -46,6 +60,7 @@ impl BusSource for EvRemote {
     fn frames(&mut self, _bus: &CanBus) -> Vec<CanFrame> {
         let due = self.pumps.is_multiple_of(REMOTE_CLIMATE_PUMPS);
         self.pumps += 1;
+        self.wake_pulse = self.wake_pulse.saturating_sub(1);
         if !due {
             return Vec::new();
         }
@@ -82,6 +97,22 @@ mod tests {
         assert_eq!(b[0] & 1, 1, "run");
         assert_eq!((b[0] & 0xf) >> 1 & 3, ClimateMode::Defrost as u8, "mode");
         assert_eq!(b[1] & 7, 0);
+    }
+
+    #[test]
+    fn lets_go_of_timer_charging_for_climate_control() {
+        let mut remote = EvRemote::default();
+        assert!(!remote.holds_charging());
+        remote.set_timer_standby(true);
+        assert!(remote.holds_charging());
+        remote.set_climate(Some(ClimateMode::Heat));
+        assert!(remote.holds_charging(), "no wake pulse");
+        for _ in 0..WAKE_PULSE_PUMPS {
+            remote.frames(&CanBus::default());
+        }
+        assert!(!remote.holds_charging());
+        remote.set_climate(None);
+        assert!(remote.holds_charging());
     }
 
     #[test]
