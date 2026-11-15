@@ -48,7 +48,8 @@ const WHEEL_SPEED_BASE: [u8; 8] = [0xFE, 0x00, 0x01, 0x64, 0x20, 0x00, 0x21, 0x0
 const WHEEL_SPEED_KEY_OFF: [u8; 8] = [0xFF, 0xFF, 0x01, 0x64, 0x2A, 0x00, 0x00, 0x06]; // as the meter sends it at LOCK
 const INV_STANDSTILL: u16 = 10_000; // rpm word offset (word = 10000 + rpm)
 const INV_DCLINK_IDLE_HALF: f32 = 1.0; // 2 V: the real inverter's reading until the link is charged
-const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2, DC-link at pack once the main contactor is closed
+const INV_DCLINK_PACK_HALF: u8 = 162; // 324 V / 2: the link with the contactors closed, until the BMU reports the pack
+const PACK_ID: u16 = 0x373; // from the BMU: b4:b5 = pack voltage, 0.1 V
 const PRECHARGE_TAU_S: f32 = 0.05;
 const ACTIVE_DISCHARGE_TAU_S: f32 = 0.5; // the link falls from 342 V to 2 V in ~2 s once asked to
 const PASSIVE_DISCHARGE_TAU_S: f32 = 60.0; // otherwise it holds its charge
@@ -94,13 +95,17 @@ impl Inverter {
         })
     }
 
+    fn pack_half(bus: &CanBus) -> f32 {
+        bus.last(PACK_ID).map_or(INV_DCLINK_PACK_HALF as f32, |f| u16::from_be_bytes([f.data[4], f.data[5]]) as f32 / 20.0)
+    }
+
     fn discharge_requested(bus: &CanBus) -> bool {
         bus.last(ECU_TORQUE_ID).is_some_and(|f| f.data[6] & ECU_DISCHARGE_REQUEST != 0)
     }
 
     pub(crate) fn integrate(&mut self, bus: &CanBus, brake: f32, dt: f32) {
         let (target, tau) = if self.hv_connected {
-            (INV_DCLINK_PACK_HALF as f32, PRECHARGE_TAU_S)
+            (Self::pack_half(bus), PRECHARGE_TAU_S)
         } else if Self::discharge_requested(bus) {
             (INV_DCLINK_IDLE_HALF, ACTIVE_DISCHARGE_TAU_S)
         } else {
@@ -282,6 +287,17 @@ mod tests {
         assert_eq!(status & INV_STATUS_SETTLED_BIT, 0);
         // Once the EV-ECU is in DRIVE the inverter reports settled again.
         assert_ne!(dclink_and_status(&inv, &commanding(0.0)).1 & INV_STATUS_SETTLED_BIT, 0);
+    }
+
+    #[test]
+    fn dc_link_charges_to_the_pack() {
+        let mut inv = Inverter { hv_connected: true, ..Inverter::default() };
+        let mut bus = CanBus::default();
+        bus.record(frame(PACK_ID, &[0, 0, 0, 0, 0x0e, 0x1a, 0, 0])); // 360.2 V, a full pack
+        for _ in 0..steps(0.5) {
+            inv.integrate(&bus, 0.0, VEHICLE_DT);
+        }
+        assert_eq!(dclink_and_status(&inv, &bus).0, 180);
     }
 
     #[test]
