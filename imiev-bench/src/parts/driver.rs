@@ -6,8 +6,8 @@ use mh8106f::System;
 use crate::adc::ev_ecu_adc;
 use crate::{CanBus, Part};
 
-const SHIFT_MAIN_PORT: u32 = 0x0080_0704; // P4DATA - shift switch matrix (main channel)
-const SHIFT_SUB_PORT: u32 = 0x0080_0702; // P2DATA - shift switch matrix (sub channel)
+const SHIFT_PORT: u32 = 0x0080_0704; // P4DATA - shift lever switches
+const INHIBITOR_PORT: u32 = 0x0080_0702; // P2DATA - inhibitor switch on the transmission
 const SHIFT_MATRIX_MASK: u8 = 0x3f; // six position switches, active-low
 const IGNITION_PORT: u32 = 0x0080_0709; // P9DATA
 const IGNITION_ON_BITS: u8 = 0x60; // IG1 + ST (start) asserted
@@ -35,6 +35,10 @@ impl Gear {
             Gear::Comfort => 0,
         };
         SHIFT_MATRIX_MASK & !(1 << bit)
+    }
+
+    fn inhibitor(self) -> u8 {
+        if self.is_forward_drive() { Gear::Drive.matrix() } else { self.matrix() }
     }
 
     pub fn is_forward_drive(self) -> bool {
@@ -67,9 +71,8 @@ fn pedal_raw(pct: f32, released: u16, full: u16) -> u16 {
 
 impl Part for DriverControls {
     fn update(&mut self, chip: &mut System, _bus: &CanBus) {
-        let m = self.gear.matrix();
-        chip.set_gpio_input(SHIFT_MAIN_PORT, SHIFT_MATRIX_MASK, m);
-        chip.set_gpio_input(SHIFT_SUB_PORT, SHIFT_MATRIX_MASK, m);
+        chip.set_gpio_input(SHIFT_PORT, SHIFT_MATRIX_MASK, self.gear.matrix());
+        chip.set_gpio_input(INHIBITOR_PORT, SHIFT_MATRIX_MASK, self.gear.inhibitor());
         let key = |bits| if self.key_on { bits } else { 0 };
         chip.set_gpio_input(IGNITION_PORT, IGNITION_ON_BITS, key(IGNITION_ON_BITS));
         // Accelerator: both redundant APS channels (main ch2, sub ch5 at half) from pedal %.

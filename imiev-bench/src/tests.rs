@@ -241,6 +241,39 @@ fn a_remote_bmu_runs_as_the_simulation_s_own() {
     assert!(bmu.node().system().cpu().pc == whole.bmu().system().cpu().pc);
 }
 
+pub(crate) fn wheel_kmh(sim: &Simulation) -> u8 {
+    sim.bus().last(0x412).map_or(0, |f| f.data[1])
+}
+
+/// Reaches `kmh` at full pedal in D, then lifts off in B.
+pub(crate) fn lift_off_in_b(ev_ecu: &EvEcu, kmh: u8) -> Simulation {
+    let mut sim = with_ev_ecu(ev_ecu);
+    sim.run(6 * CYCLES_PER_SECOND);
+    sim.set_gear(Gear::Drive);
+    sim.set_pedal(100.0);
+    for _ in 0..300 {
+        if wheel_kmh(&sim) >= kmh {
+            break;
+        }
+        sim.run(CYCLES_PER_SECOND / 10);
+    }
+    assert!(wheel_kmh(&sim) >= kmh, "{}: only reached {} km/h", ev_ecu.part, wheel_kmh(&sim));
+    sim.set_gear(Gear::Eco);
+    sim.set_pedal(0.0);
+    sim
+}
+
+#[test]
+fn ev_ecu_9499b13103_regenerates_in_b() {
+    let mut sim = lift_off_in_b(&firmware::EV_ECU_9499B13103, 60);
+    sim.run(5 * CYCLES_PER_SECOND); // past P1A0B's 3 s debounce
+    let dtcs = sim.ecu_dtcs();
+    assert!(!dtcs.iter().any(|d| d == "P1A0B"), "P1A0B confirmed: the inhibitor switch doesn't read D in B");
+    assert!(dtcs.is_empty(), "DTCs confirmed: {dtcs:?}");
+    let nm = sim.ecu_torque_command();
+    assert!(nm < -50.0, "{nm} Nm at {} km/h with the pedal released in B", wheel_kmh(&sim));
+}
+
 fn with_ev_ecu(ev_ecu: &EvEcu) -> Simulation {
     Simulation::new(ev_ecu, &firmware::BMU_9499B11500)
 }
